@@ -45,7 +45,7 @@ type Options struct {
 type cliOptions struct {
 	Project         *string    `name:"project" type:"path" placeholder:"PATH" help:"Expose PATH as the project directory; write access follows --write-policy (default: current directory)."`
 	Instance        *string    `name:"instance" placeholder:"NAME" help:"Use this managed instance name, overriding project configuration (default: project directory name)."`
-	AgentConfig     *bool      `name:"agent-config" negatable:"" help:"Seed detected agent configuration into the instance. Default: enabled."`
+	AgentConfig     *bool      `name:"agent-config" negatable:"" help:"Expose detected host agent configuration read-only and seed mutable credentials. Default: enabled."`
 	NoConfig        bool       `name:"no-config" help:"Do not load user or project configuration files."`
 	NoProjectConfig bool       `name:"no-project-config" help:"Load user configuration but not the project configuration file."`
 	Network         *string    `name:"network" enum:"private,host,none" placeholder:"private|host|none" help:"Network mode: private (isolated via pasta), host (shared), or none (disabled). Default: private."`

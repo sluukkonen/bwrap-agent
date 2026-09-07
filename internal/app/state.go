@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -176,64 +175,4 @@ func writeStateFile(state, relative string, content []byte, mode uint32) (string
 	}
 	created = false
 	return filepath.Join(state, relative), nil
-}
-
-func pathExists(path string) bool {
-	_, err := os.Lstat(path)
-	return err == nil
-}
-
-func copyTree(source, destination string) error {
-	if err := os.Mkdir(destination, 0o700); err != nil {
-		return err
-	}
-	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == source {
-			return nil
-		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(destination, relative)
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			link, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			return os.Symlink(link, target)
-		}
-		if entry.IsDir() {
-			return os.Mkdir(target, info.Mode().Perm())
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		input, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
-		if err != nil {
-			input.Close()
-			return err
-		}
-		_, copyErr := io.Copy(output, input)
-		inputCloseErr := input.Close()
-		closeErr := output.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if inputCloseErr != nil {
-			return inputCloseErr
-		}
-		return closeErr
-	})
 }

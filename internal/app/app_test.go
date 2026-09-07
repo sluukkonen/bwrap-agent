@@ -505,29 +505,3 @@ func TestPrivatePortsBindHostLoopback(t *testing.T) {
 		}
 	}
 }
-
-func TestOpenCodeAdapterSeedsOnce(t *testing.T) {
-	root := t.TempDir()
-	config, data, state := filepath.Join(root, "config"), filepath.Join(root, "data"), filepath.Join(root, "state")
-	if err := os.MkdirAll(filepath.Join(config, "opencode"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(data, "opencode"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	os.WriteFile(filepath.Join(config, "opencode", "opencode.json"), []byte(`{"model":"first"}`), 0o600)
-	os.WriteFile(filepath.Join(data, "opencode", "auth.json"), []byte(`{"token":"secret"}`), 0o600)
-	t.Setenv("XDG_CONFIG_HOME", config)
-	t.Setenv("XDG_DATA_HOME", data)
-	if err := prepareAgent("opencode", state); err != nil {
-		t.Fatal(err)
-	}
-	os.WriteFile(filepath.Join(config, "opencode", "opencode.json"), []byte(`{"model":"changed"}`), 0o600)
-	if err := prepareAgent("opencode", state); err != nil {
-		t.Fatal(err)
-	}
-	content, _ := os.ReadFile(filepath.Join(state, "config", "opencode", "opencode.json"))
-	if string(content) != `{"model":"first"}` {
-		t.Fatalf("adapter overwrote seeded config: %s", content)
-	}
-}

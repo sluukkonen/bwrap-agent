@@ -26,7 +26,13 @@ $ ./bin/bwrap-agent run --project . podman info
 $ ./bin/bwrap-agent run --project . bash
 ```
 
-The `run` command requires a program; there is no implicit default agent. The launcher detects an explicitly requested `opencode` by executable basename and, on the first run of an instance, copies the host's OpenCode config directory and `auth.json` into isolated state. Later changes stay sandbox-local, so token refreshes and plugin installation work without allowing the agent to rewrite the real host configuration. Use `--no-agent-config` for a clean instance.
+The `run` command requires a program; there is no implicit default agent. The launcher currently detects OpenCode and Pi by executable basename. Their user-managed host configuration, extensions, skills, and packages are exposed read-only, so host edits are visible on the next launch without letting the sandbox rewrite them. Credentials and mutable runtime data remain writable, persistent, and isolated per instance. Use `--no-agent-config` to suppress new host configuration exposure and credential seeding; it never deletes data already stored in an instance.
+
+For OpenCode, `$XDG_CONFIG_HOME/opencode` is mounted read-only while `$XDG_DATA_HOME/opencode`, including a seed-once copy of `auth.json`, remains instance-local. Host `OPENCODE_CONFIG`, `OPENCODE_TUI_CONFIG`, and `OPENCODE_CONFIG_DIR` path overrides are mapped to read-only sandbox paths. Other OpenCode environment settings still require an explicit `--env` or `[env]` entry.
+
+For Pi, the host directory selected by `PI_CODING_AGENT_DIR` (normally `~/.pi/agent`) is presented as a layered view. Configuration and resources are read-only; `auth.json`, `trust.json`, `models-store.json`, and sessions are seed-once or instance-local writable state. Host `~/.agents/skills` is also exposed read-only. Pi's documented terminal overrides are forwarded automatically. Global `/settings`, model-save, and package-management operations may fail because their host-owned targets are read-only; make those changes with host Pi. Project-local Pi changes still follow the selected workspace write policy.
+
+Configuration references to arbitrary files outside an agent's configuration tree are not exposed automatically. Add a deliberate `--ro-bind` and ensure the configured sandbox path resolves to that mount when such a reference is required.
 
 By default, the instance uses a readable name derived from the project directory (for example, `bwrap-agent`). Returning to the same canonical project reuses its sandbox home, agent credentials, dependency caches, images, containers, and volumes. If that readable name already belongs to another project, a short hash of the canonical path is appended. Different worktree directory names therefore normally receive distinct instances automatically.
 
@@ -163,7 +169,7 @@ Do not bind the host Podman socket into this sandbox. Podman's API is deliberate
 --podman auto|on|off      detect Podman, require it, or disable it (default: auto)
 --write-policy workspace|state-only
                            allow workspace writes (default), or only instance-state writes
---[no-]agent-config        enable or disable detected agent configuration import
+--[no-]agent-config        expose detected host agent config read-only and seed credentials
 --no-project-config       skip .bwrap-agent.toml
 --no-config               skip user and project configuration
 ```

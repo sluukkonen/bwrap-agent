@@ -12,6 +12,7 @@ The boundary is intended to protect hidden host files, other agent processes, ho
 - UID 0 displayed inside the launcher or a container is namespaced and maps back to the invoking unprivileged host user.
 - Under the default `workspace` write policy, the project itself is untrusted and disposable. A malicious agent can delete or rewrite it.
 - The per-instance state is also writable and untrusted. Do not store unrelated secrets there.
+- Agent credentials are copied into writable per-instance state. A compromised agent can read or corrupt every credential seeded into its own instance; project ownership prevents that state from being reused by another canonical project.
 - Network peers are potentially hostile unless the environment is genuinely air-gapped.
 
 ## Deliberate exposures
@@ -20,6 +21,7 @@ The boundary is intended to protect hidden host files, other agent processes, ho
 - The default `workspace` policy grants write access to validated external Git metadata, including refs and metadata shared by linked worktrees.
 - Explicit `run --rw-bind` paths are fully writable and are therefore rejected by `state-only`.
 - Project-local `.bwrap-agent.toml` is fully trusted and evaluated by the host launcher before sandbox creation. It can request arbitrary read-only or read-write binds, select host networking, copy explicitly named host environment variables into the sandbox, and select an instance name owned by that canonical project. Cross-project instance reuse is rejected. Use `run --no-project-config` for untrusted checkouts.
+- Recognized host agent configuration and executable resources are exposed read-only. Path overrides and automatically discovered sources are rejected if a sandbox-writable path could retarget them, but the configuration itself is trusted and may execute plugins or refer to deliberately exposed resources.
 - External Git metadata is exposed only after its worktree backlink or `core.worktree` association has been validated. Malformed and unrelated `.git` pointers abort launch.
 - Network access permits exfiltration of project contents. Air-gapping or a controlled proxy is required when confidentiality matters.
 - Interactive commands control a launcher-owned proxy PTY, not the host terminal device. Their escape-sequence output is necessarily forwarded to the user's terminal; the launcher restores terminal modes on exit as defense in depth.

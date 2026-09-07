@@ -25,7 +25,8 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # Default: a name derived from the project directory.
 # instance = "my-project"
 
-# Seed configuration for a detected agent into its instance state.
+# Expose detected host agent configuration read-only and seed mutable
+# credentials into instance state. Existing instance data is never cleared.
 # Default: true.
 # agent_config = true
 

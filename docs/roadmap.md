@@ -16,6 +16,6 @@
 - A supervisor that reserves ports atomically and reports stable URLs.
 - Read-only credential injection through file descriptors or short-lived broker tokens instead of environment variables.
 - Shared read-only image and package caches with per-instance writable overlays.
-- Agent adapters for config discovery, first-run login, and version checks while retaining the generic command interface.
+- Extend the OpenCode and Pi adapter registry with config discovery, first-run login, and version checks for more agents while retaining the generic command interface.
 - Structured audit events for mounts, published ports, lifecycle, and policy decisions.
 - An HTTP(S)-only proxy mode with destination allowlists and internal CA support.

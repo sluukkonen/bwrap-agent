@@ -99,32 +99,73 @@ func pathResolutionCandidates(path string) ([]string, error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("path is not absolute: %s", path)
 	}
-	parts := strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator))
 	seen := map[string]bool{}
 	var candidates []string
-	for count := 0; count <= len(parts); count++ {
-		prefix := string(filepath.Separator)
-		if count > 0 {
-			prefix = filepath.Join(prefix, filepath.Join(parts[:count]...))
-		}
-		resolvedPrefix, err := filepath.EvalSymlinks(prefix)
-		if errors.Is(err, os.ErrNotExist) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		candidate := resolvedPrefix
-		if count < len(parts) {
-			candidate = filepath.Join(candidate, filepath.Join(parts[count:]...))
-		}
+	addCandidate := func(candidate string) {
 		candidate = filepath.Clean(candidate)
 		if !seen[candidate] {
 			seen[candidate] = true
 			candidates = append(candidates, candidate)
 		}
 	}
+	addCandidate(path)
+
+	parts := splitPathComponents(path)
+	prefix := string(filepath.Separator)
+	symlinkCount := 0
+	for len(parts) > 0 {
+		part := parts[0]
+		parts = parts[1:]
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			prefix = filepath.Dir(prefix)
+			continue
+		}
+		next := filepath.Join(prefix, part)
+		info, err := os.Lstat(next)
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			prefix = next
+			continue
+		}
+		// Record the symlink itself, not only the eventually resolved path. A
+		// writable directory containing this hop can otherwise retarget a
+		// future resolution without appearing in the final path.
+		addCandidate(next)
+		symlinkCount++
+		if symlinkCount > 255 {
+			return nil, fmt.Errorf("too many symlinks while resolving %s", path)
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return nil, err
+		}
+		if filepath.IsAbs(target) {
+			prefix = string(filepath.Separator)
+		}
+		parts = append(splitPathComponents(target), parts...)
+		rewritten := prefix
+		if len(parts) != 0 {
+			rewritten = filepath.Join(prefix, filepath.Join(parts...))
+		}
+		addCandidate(rewritten)
+	}
 	return candidates, nil
+}
+
+func splitPathComponents(path string) []string {
+	trimmed := strings.TrimLeft(path, string(filepath.Separator))
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, string(filepath.Separator))
 }
 
 func validateInstanceStorePlacement(lexical, resolved, project, gitCommon string, rwBind []string) error {

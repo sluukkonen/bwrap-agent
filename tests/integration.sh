@@ -90,6 +90,56 @@ CONFIG_HOST=from-host XDG_CONFIG_HOME="$config_home" "$binary" \
         printf "config-ok\n"
     ' sh "$config_home/bwrap-agent/readable"
 
+agent_home="$test_root/agent-home"
+agent_config="$test_root/agent-config"
+agent_data="$test_root/agent-data"
+agent_bins="$test_root/agent-bins"
+mkdir -p "$agent_home" "$agent_config/opencode" "$agent_data/opencode" "$agent_bins"
+printf 'first\n' >"$agent_config/opencode/live-value"
+printf 'host-auth\n' >"$agent_data/opencode/auth.json"
+printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'test "$(cat "$XDG_CONFIG_HOME/opencode/live-value")" = "$1"' \
+    'if (printf blocked >"$XDG_CONFIG_HOME/opencode/write-probe") 2>/dev/null; then exit 1; fi' \
+    'test -w "$XDG_DATA_HOME/opencode"' \
+    'test "$(cat "$XDG_DATA_HOME/opencode/auth.json")" = "$2"' \
+    'printf "%s\n" "$3" >"$XDG_DATA_HOME/opencode/auth.json"' \
+    >"$agent_bins/opencode"
+chmod +x "$agent_bins/opencode"
+HOME="$agent_home" XDG_CONFIG_HOME="$agent_config" XDG_DATA_HOME="$agent_data" "$binary" \
+    run --project "$config_project" --instance integration-opencode --podman off --network host --tty never \
+    "$agent_bins/opencode" first host-auth sandbox-auth
+printf 'second\n' >"$agent_config/opencode/live-value"
+printf 'changed-host-auth\n' >"$agent_data/opencode/auth.json"
+HOME="$agent_home" XDG_CONFIG_HOME="$agent_config" XDG_DATA_HOME="$agent_data" "$binary" \
+    run --project "$config_project" --instance integration-opencode --podman off --network host --tty never \
+    "$agent_bins/opencode" second sandbox-auth sandbox-auth
+test ! -e "$agent_config/opencode/write-probe"
+printf 'opencode-agent-ok\n'
+
+pi_home="$test_root/pi-home"
+pi_agent="$pi_home/.pi/agent"
+mkdir -p "$pi_agent/extensions" "$agent_bins"
+printf 'host-settings\n' >"$pi_agent/settings.json"
+printf 'host-pi-auth\n' >"$pi_agent/auth.json"
+printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'test "$(cat "$PI_CODING_AGENT_DIR/settings.json")" = host-settings' \
+    'if (printf blocked >"$PI_CODING_AGENT_DIR/settings.json") 2>/dev/null; then exit 1; fi' \
+    'test "$(cat "$PI_CODING_AGENT_DIR/auth.json")" = host-pi-auth' \
+    'printf sandbox-pi-auth >"$PI_CODING_AGENT_DIR/auth.json"' \
+    'printf session >"$PI_CODING_AGENT_SESSION_DIR/session.jsonl"' \
+    >"$agent_bins/pi"
+chmod +x "$agent_bins/pi"
+HOME="$pi_home" "$binary" \
+    run --project "$config_project" --instance integration-pi --podman off --network host --tty never \
+    "$agent_bins/pi"
+test "$(cat "$BWRAP_AGENT_STATE_HOME/instances/integration-pi/state/home/.pi/agent/auth.json")" = sandbox-pi-auth
+test -e "$BWRAP_AGENT_STATE_HOME/instances/integration-pi/state/home/.pi/agent/sessions/session.jsonl"
+printf 'pi-agent-ok\n'
+
 mkdir "$test_root/path-without-podman"
 ln -s "$(command -v bwrap)" "$test_root/path-without-podman/bwrap"
 PATH="$test_root/path-without-podman" "$binary" \

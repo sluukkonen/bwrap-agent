@@ -323,73 +323,29 @@ func writePrivateResolvConf(state string) (string, error) {
 	return writeStateFile(state, "config/resolv.conf", content, 0o600)
 }
 
-func prepareOpenCode(state string) error {
-	if err := secureMkdir(state, 0o700); err != nil {
-		return err
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	configBase := envValue(os.Environ(), "XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	dataBase := envValue(os.Environ(), "XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-	destinationConfig := filepath.Join(state, "config", "opencode")
-	destinationData := filepath.Join(state, "data", "opencode")
-	if _, err := ensureStateDirectory(state, "config", 0o700); err != nil {
-		return err
-	}
-	sourceInfo, sourceErr := os.Stat(filepath.Join(configBase, "opencode"))
-	if sourceErr == nil && sourceInfo.IsDir() && !pathExists(destinationConfig) {
-		if err := copyTree(filepath.Join(configBase, "opencode"), destinationConfig); err != nil {
-			return err
-		}
-	} else if _, err := ensureStateDirectory(state, "config/opencode", 0o700); err != nil {
-		return err
-	}
-	if _, err := ensureStateDirectory(state, "data/opencode", 0o700); err != nil {
-		return err
-	}
-	sourceAuth := filepath.Join(dataBase, "opencode", "auth.json")
-	destinationAuth := filepath.Join(destinationData, "auth.json")
-	if info, err := os.Stat(sourceAuth); err == nil && info.Mode().IsRegular() && !pathExists(destinationAuth) {
-		content, err := os.ReadFile(sourceAuth)
-		if err != nil {
-			return err
-		}
-		_, err = writeStateFile(state, "data/opencode/auth.json", content, 0o600)
-		return err
-	}
-	return nil
-}
-
-func prepareAgent(program, state string) error {
-	base := filepath.Base(program)
-	if base == "opencode" || base == "opencode.exe" {
-		return prepareOpenCode(state)
-	}
-	return nil
-}
-
-func resolveCommand(requested []string) ([]string, string, error) {
+func resolveCommand(context agentContext, requested []string, adapter *agentAdapter) ([]string, agentSetup, error) {
 	found, err := exec.LookPath(requested[0])
 	if err != nil {
-		return nil, "", fmt.Errorf("command not found: %s", requested[0])
+		return nil, agentSetup{}, fmt.Errorf("command not found: %s", requested[0])
 	}
 	absolute, err := filepath.Abs(found)
 	if err != nil {
-		return nil, "", err
+		return nil, agentSetup{}, err
 	}
 	resolved, err := filepath.EvalSymlinks(absolute)
 	if err != nil {
-		return nil, "", err
+		return nil, agentSetup{}, err
 	}
 	for _, prefix := range []string{"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"} {
 		if strings.HasPrefix(resolved, prefix) {
-			return append([]string(nil), requested...), "", nil
+			return append([]string(nil), requested...), agentSetup{}, nil
 		}
 	}
+	if adapter != nil && adapter.resolveExternalCommand != nil {
+		return adapter.resolveExternalCommand(context, requested, resolved)
+	}
 	command := append([]string{"/run/bwrap-agent/command"}, requested[1:]...)
-	return command, resolved, nil
+	return command, agentSetup{Mounts: []agentMount{{resolved, "/run/bwrap-agent/command"}}}, nil
 }
 
 type mountBuilder struct {
@@ -466,12 +422,16 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 			return LaunchPlan{}, err
 		}
 	}
-	if !opts.NoAgentConfig {
-		if err := prepareAgent(opts.Command[0], state); err != nil {
-			return LaunchPlan{}, err
-		}
+	adapter := detectAgent(opts.Command[0])
+	agentContext := agentContext{
+		state: state, project: project, gitCommon: identity.GitCommon,
+		rwBind: identity.RWBind, hostEnv: os.Environ(), config: !opts.NoAgentConfig,
 	}
-	command, externalCommand, err := resolveCommand(opts.Command)
+	agent, err := prepareAgent(adapter, agentContext)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	command, commandSetup, err := resolveCommand(agentContext, opts.Command, adapter)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
@@ -501,6 +461,12 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		environment["GIT_OPTIONAL_LOCKS"] = "0"
 	}
 	for name, value := range terminalEnv(os.Environ()) {
+		environment[name] = value
+	}
+	for name, value := range agent.Environment {
+		environment[name] = value
+	}
+	for name, value := range commandSetup.Environment {
 		environment[name] = value
 	}
 	for _, inherited := range []string{"LANG", "TZ"} {
@@ -599,6 +565,9 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	for _, source := range identity.RWBind {
 		mounts.mount("--bind", source, source)
 	}
+	for _, bind := range agent.Mounts {
+		mounts.mount("--ro-bind", bind.Source, bind.Destination)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return LaunchPlan{}, err
@@ -608,8 +577,8 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		return LaunchPlan{}, err
 	}
 	mounts.mount("--ro-bind", self, "/run/bwrap-agent/init")
-	if externalCommand != "" {
-		mounts.mount("--ro-bind", externalCommand, "/run/bwrap-agent/command")
+	for _, bind := range commandSetup.Mounts {
+		mounts.mount("--ro-bind", bind.Source, bind.Destination)
 	}
 	names := make([]string, 0, len(environment))
 	for name := range environment {
