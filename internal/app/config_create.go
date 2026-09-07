@@ -62,8 +62,8 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # EMPTY = ""
 # FROM_HOST = { inherit = true }
 
-# Invocation controls such as project selection, instance naming, state
-# location, dry-run mode, and the target command are run-command options only.
+# Invocation controls such as project selection, instance naming, dry-run
+# mode, and the target command are run-command options only.
 `
 
 func createProjectConfig(directory string) error {

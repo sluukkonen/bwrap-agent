@@ -26,7 +26,6 @@ type Options struct {
 	Project       string
 	Instance      string
 	NoAgentConfig bool
-	StateDir      string
 	Network       string
 	Publish       []string
 	Podman        string
@@ -45,9 +44,8 @@ type Options struct {
 // configurable scalar be distinguished from an explicit command-line override.
 type cliOptions struct {
 	Project         *string    `name:"project" type:"path" placeholder:"PATH" help:"Expose PATH as the project directory; write access follows --write-policy (default: current directory)."`
-	Instance        *string    `name:"instance" placeholder:"NAME" help:"Use this managed instance name, or label an unmanaged --state-dir (default: project directory name)."`
+	Instance        *string    `name:"instance" placeholder:"NAME" help:"Use this managed instance name (default: project directory name)."`
 	AgentConfig     *bool      `name:"agent-config" negatable:"" help:"Seed detected agent configuration into the instance. Default: enabled."`
-	StateDir        *string    `name:"state-dir" type:"path" placeholder:"PATH" help:"Override the path for this instance's persistent home, caches, and Podman storage."`
 	NoConfig        bool       `name:"no-config" help:"Do not load user or project configuration files."`
 	NoProjectConfig bool       `name:"no-project-config" help:"Load user configuration but not the project configuration file."`
 	Network         *string    `name:"network" enum:"private,host,none" placeholder:"private|host|none" help:"Network mode: private (isolated via pasta), host (shared), or none (disabled). Default: private."`
@@ -248,12 +246,7 @@ func Main(args []string) int {
 	if err != nil || code != 0 {
 		return code
 	}
-	identity, err := resolveInstance(opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
-		return 2
-	}
-	lock, err := acquireInstanceLock(identity)
+	identity, lock, err := resolveAndLockInstance(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
 		return 2

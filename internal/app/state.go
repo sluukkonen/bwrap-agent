@@ -21,21 +21,14 @@ type instanceLock struct {
 }
 
 func acquireInstanceLock(identity instanceIdentity) (*instanceLock, error) {
-	lockPath := identity.LockPath
-	if lockPath == "" {
-		lockPath = identity.State
-	}
-	if err := secureMkdir(lockPath, 0o700); err != nil {
-		return nil, err
-	}
-	fd, err := unix.Open(lockPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(identity.Root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("could not open instance lock: %w", err)
 	}
 	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		unix.Close(fd)
 		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-			return nil, fmt.Errorf("%w: %s (state %s); use a separate worktree or different instance state", errInstanceBusy, identity.Instance, identity.State)
+			return nil, fmt.Errorf("%w: %s (state %s); use a separate worktree or different instance", errInstanceBusy, identity.Instance, identity.State)
 		}
 		return nil, fmt.Errorf("could not lock instance %s: %w", identity.Instance, err)
 	}

@@ -28,6 +28,9 @@ var terminalEnvironment = map[string]bool{
 }
 
 func safeName(value string) (string, error) {
+	if strings.HasPrefix(value, deletionTombstonePrefix) {
+		return "", fmt.Errorf("instance names beginning with %q are reserved", deletionTombstonePrefix)
+	}
 	if value == "" || value == "." || value == ".." || len(value) > 80 {
 		return "", errors.New("instance name must be 1-80 characters from [A-Za-z0-9_.-]")
 	}
@@ -70,34 +73,13 @@ func collisionName(project string) string {
 }
 
 type instanceIdentity struct {
-	Project  string
-	Instance string
-	State    string
-	LockPath string
-	Root     string
-	Managed  bool
-}
-
-func resolveInstance(opts Options) (instanceIdentity, error) {
-	project, err := resolveProjectDirectory(opts.Project)
-	if err != nil {
-		return instanceIdentity{}, err
-	}
-	if opts.StateDir != "" {
-		instance := opts.Instance
-		if instance == "" {
-			instance = defaultName(project)
-		}
-		if instance, err = safeName(instance); err != nil {
-			return instanceIdentity{}, err
-		}
-		state, err := resolveState(opts.StateDir)
-		if err != nil {
-			return instanceIdentity{}, err
-		}
-		return instanceIdentity{Project: project, Instance: instance, State: state, LockPath: state}, nil
-	}
-	return resolveManagedInstance(project, opts.Instance)
+	Project   string
+	Instance  string
+	State     string
+	Root      string
+	GitCommon string
+	ROBind    []string
+	RWBind    []string
 }
 
 func resolveProjectDirectory(path string) (string, error) {
@@ -341,24 +323,6 @@ func writePrivateResolvConf(state string) (string, error) {
 	return writeStateFile(state, "config/resolv.conf", content, 0o600)
 }
 
-func externalGitCommonDir(project string) string {
-	command := exec.Command("git", "-C", project, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	command.Stderr = nil
-	output, err := command.Output()
-	if err != nil {
-		return ""
-	}
-	common, err := resolveExisting(strings.TrimSpace(string(output)))
-	if err != nil {
-		return ""
-	}
-	relative, err := filepath.Rel(project, common)
-	if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return ""
-	}
-	return common
-}
-
 func prepareOpenCode(state string) error {
 	if err := secureMkdir(state, 0o700); err != nil {
 		return err
@@ -452,10 +416,11 @@ func (m *mountBuilder) mount(option, source, destination string) {
 }
 
 func BuildPlan(opts Options) (LaunchPlan, error) {
-	identity, err := resolveInstance(opts)
+	identity, lock, err := resolveAndLockInstance(opts)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
+	defer lock.Close()
 	return buildPlan(opts, identity)
 }
 
@@ -529,7 +494,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		"PATH":            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"XDG_CONFIG_HOME": filepath.Join(state, "config"), "XDG_CACHE_HOME": filepath.Join(state, "home", ".cache"),
 		"XDG_DATA_HOME": filepath.Join(state, "data"), "XDG_STATE_HOME": filepath.Join(state, "home", ".local", "state"),
-		"XDG_RUNTIME_DIR": filepath.Join(state, "run"), "TMPDIR": filepath.Join(state, "tmp"),
+		"XDG_RUNTIME_DIR": "/run/bwrap-agent/runtime", "TMPDIR": filepath.Join(state, "tmp"),
 		"BWRAP_AGENT_INSTANCE": instance, "BWRAP_AGENT_PODMAN": boolString(podmanBin != ""),
 	}
 	if writePolicy == "state-only" {
@@ -624,25 +589,15 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		workspaceMount = "--ro-bind"
 	}
 	mounts.mount(workspaceMount, project, project)
-	if common := externalGitCommonDir(project); common != "" {
-		mounts.mount(workspaceMount, common, common)
+	if identity.GitCommon != "" {
+		mounts.mount(workspaceMount, identity.GitCommon, identity.GitCommon)
 	}
-	// State is the writable exception, even if a custom state path is nested
-	// beneath the project or its external Git metadata.
 	mounts.mount("--bind", state, state)
-	for _, source := range opts.ROBind {
-		resolved, err := resolveExisting(source)
-		if err != nil {
-			return LaunchPlan{}, err
-		}
-		mounts.mount("--ro-bind", resolved, resolved)
+	for _, source := range identity.ROBind {
+		mounts.mount("--ro-bind", source, source)
 	}
-	for _, source := range opts.RWBind {
-		resolved, err := resolveExisting(source)
-		if err != nil {
-			return LaunchPlan{}, err
-		}
-		mounts.mount("--bind", resolved, resolved)
+	for _, source := range identity.RWBind {
+		mounts.mount("--bind", source, source)
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -691,6 +646,9 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		outer = append(outer, "--")
 	}
 	launchEnv := cloneMap(environment)
+	// The outer podman-unshare process needs a host-visible runtime directory;
+	// bubblewrap sets the shorter private value encoded in its own argv.
+	launchEnv["XDG_RUNTIME_DIR"] = filepath.Join(state, "run")
 	if storageConfig != "" {
 		launchEnv["CONTAINERS_STORAGE_CONF"] = storageConfig
 	}

@@ -40,7 +40,7 @@ func TestNames(t *testing.T) {
 	if _, err := safeName("worktree-1.foo"); err != nil {
 		t.Fatal(err)
 	}
-	for _, invalid := range []string{"", ".", "..", "../../escape", "snow-雪"} {
+	for _, invalid := range []string{"", ".", "..", "../../escape", "snow-雪", ".deleting-example"} {
 		if _, err := safeName(invalid); err == nil {
 			t.Errorf("safeName(%q) unexpectedly succeeded", invalid)
 		}
@@ -64,9 +64,8 @@ func TestNames(t *testing.T) {
 }
 
 func TestInstanceLockIsExclusiveAndReleased(t *testing.T) {
-	lockBase := t.TempDir()
-	t.Setenv("BWRAP_AGENT_STATE_HOME", lockBase)
-	identity := instanceIdentity{Instance: "locked-project", State: filepath.Join(t.TempDir(), "state")}
+	root := t.TempDir()
+	identity := instanceIdentity{Instance: "locked-project", Root: root, State: filepath.Join(root, "state")}
 	first, err := acquireInstanceLock(identity)
 	if err != nil {
 		t.Fatal(err)
@@ -87,16 +86,15 @@ func TestInstanceLockIsExclusiveAndReleased(t *testing.T) {
 	}
 }
 
-func TestInstanceLockFollowsStateDirectoryNotDisplayName(t *testing.T) {
-	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	state := filepath.Join(t.TempDir(), "shared-state")
-	first, err := acquireInstanceLock(instanceIdentity{Instance: "first", State: state})
+func TestInstanceLockFollowsManagedRootNotDisplayName(t *testing.T) {
+	root := t.TempDir()
+	first, err := acquireInstanceLock(instanceIdentity{Instance: "first", Root: root})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	if _, err := acquireInstanceLock(instanceIdentity{Instance: "second", State: state}); !errorsIs(err, errInstanceBusy) {
-		t.Fatalf("same state with a different name was not locked: %v", err)
+	if _, err := acquireInstanceLock(instanceIdentity{Instance: "second", Root: root}); !errorsIs(err, errInstanceBusy) {
+		t.Fatalf("same root with a different name was not locked: %v", err)
 	}
 }
 
@@ -232,14 +230,13 @@ func TestHelpIsHandledWithoutBuildingPlan(t *testing.T) {
 		"auto (enable if found), on (require), or off (disable)",
 		"auto (when stdin and stdout are terminals), always, or never",
 		"HOST_PORT=0 chooses a free port",
-		"persistent home, caches, and Podman storage",
 		"inherit NAME from the host",
 	} {
 		if !strings.Contains(normalizedHelp, expected) {
 			t.Errorf("help does not contain %q:\n%s", expected, help)
 		}
 	}
-	for _, obsolete := range []string{"--no-podman", "--podman-socket", "--no-git-common-dir"} {
+	for _, obsolete := range []string{"--no-podman", "--podman-socket", "--no-git-common-dir", "--state-dir"} {
 		if strings.Contains(help, obsolete) {
 			t.Errorf("help still contains obsolete option %q", obsolete)
 		}
@@ -276,6 +273,7 @@ func TestRootAndConfigHelpExposeCommands(t *testing.T) {
 
 func TestLinkedWorktreeCommonDirectoryIsMounted(t *testing.T) {
 	root := t.TempDir()
+	t.Setenv("BWRAP_AGENT_STATE_HOME", filepath.Join(root, "state-home"))
 	repository := filepath.Join(root, "repository")
 	worktree := filepath.Join(root, "worktree")
 	if err := os.Mkdir(repository, 0o700); err != nil {
@@ -306,14 +304,14 @@ func TestLinkedWorktreeCommonDirectoryIsMounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detected := externalGitCommonDir(worktree); detected != common {
+	if detected, err := validatedExternalGitCommonDir(worktree); err != nil || detected != common {
 		t.Fatalf("common directory = %q, want %q", detected, common)
 	}
-	if detected := externalGitCommonDir(repository); detected != "" {
+	if detected, err := validatedExternalGitCommonDir(repository); err != nil || detected != "" {
 		t.Fatalf("ordinary repository produced external common directory %q", detected)
 	}
 	plan, err := BuildPlan(Options{
-		Project: worktree, StateDir: filepath.Join(root, "state"), Instance: "worktree-test",
+		Project: worktree, Instance: "worktree-test",
 		Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"},
 	})
 	if err != nil {
@@ -324,7 +322,7 @@ func TestLinkedWorktreeCommonDirectoryIsMounted(t *testing.T) {
 		t.Fatalf("external Git common directory was not mounted: %#v", plan.Bwrap)
 	}
 	readOnlyPlan, err := BuildPlan(Options{
-		Project: worktree, StateDir: filepath.Join(root, "read-only-state"), Instance: "read-only-worktree-test",
+		Project: worktree, Instance: "read-only-worktree-test",
 		Network: "host", Podman: "off", WritePolicy: "state-only", TTY: "never", Command: []string{"/bin/true"},
 	})
 	if err != nil {
@@ -348,7 +346,8 @@ func TestTerminalEnvironment(t *testing.T) {
 }
 
 func TestBuildPlanWithoutPodman(t *testing.T) {
-	plan, err := BuildPlan(Options{Project: ".", StateDir: t.TempDir(), Instance: "plan-test", Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"}})
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	plan, err := BuildPlan(Options{Project: ".", Instance: "plan-test", Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,9 +364,9 @@ func TestBuildPlanWithoutPodman(t *testing.T) {
 }
 
 func TestStateOnlyWritePolicy(t *testing.T) {
-	state := filepath.Join(t.TempDir(), "state")
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	plan, err := BuildPlan(Options{
-		Project: ".", StateDir: state, Instance: "state-only-test", Network: "host", Podman: "off",
+		Project: ".", Instance: "state-only-test", Network: "host", Podman: "off",
 		WritePolicy: "state-only", TTY: "never", Command: []string{"/bin/true"},
 	})
 	if err != nil {
@@ -378,6 +377,7 @@ func TestStateOnlyWritePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(plan.Bwrap, "\x00")
+	state := plan.State
 	for _, mount := range []string{
 		"--ro-bind\x00" + project + "\x00" + project,
 		"--bind\x00" + state + "\x00" + state,
@@ -399,8 +399,9 @@ func TestStateOnlyWritePolicy(t *testing.T) {
 }
 
 func TestStateOnlyPolicyRejectsRWBind(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	_, err := BuildPlan(Options{
-		Project: ".", StateDir: t.TempDir(), Instance: "state-only-rw-bind", Network: "host", Podman: "off",
+		Project: ".", Instance: "state-only-rw-bind", Network: "host", Podman: "off",
 		WritePolicy: "state-only", RWBind: []string{"."}, TTY: "never", Command: []string{"/bin/true"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "--rw-bind is incompatible") {
@@ -409,11 +410,11 @@ func TestStateOnlyPolicyRejectsRWBind(t *testing.T) {
 }
 
 func TestStateOnlyGitOptionalLocksCanBeOverridden(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	base := Options{
 		Project: ".", Instance: "state-only-env", Network: "host", Podman: "off",
 		WritePolicy: "state-only", TTY: "never", Command: []string{"/bin/true"},
 	}
-	base.StateDir = filepath.Join(t.TempDir(), "override")
 	base.Env = []string{"GIT_OPTIONAL_LOCKS=1"}
 	plan, err := BuildPlan(base)
 	if err != nil {
@@ -422,7 +423,7 @@ func TestStateOnlyGitOptionalLocksCanBeOverridden(t *testing.T) {
 	if plan.LaunchEnv["GIT_OPTIONAL_LOCKS"] != "1" {
 		t.Fatalf("explicit environment did not override default: %#v", plan.LaunchEnv)
 	}
-	base.StateDir = filepath.Join(t.TempDir(), "unset")
+	base.Instance = "state-only-env-unset"
 	base.Env = nil
 	base.UnsetEnv = []string{"GIT_OPTIONAL_LOCKS"}
 	plan, err = BuildPlan(base)
@@ -435,8 +436,8 @@ func TestStateOnlyGitOptionalLocksCanBeOverridden(t *testing.T) {
 }
 
 func TestEnabledPodmanPlan(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	base := Options{Project: ".", Instance: "podman-plan", Network: "host", Podman: "on", TTY: "never", Command: []string{"/bin/true"}}
-	base.StateDir = filepath.Join(t.TempDir(), "default")
 	plan, err := BuildPlan(base)
 	if err != nil {
 		t.Fatal(err)
@@ -446,6 +447,12 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	}
 	if _, exists := plan.LaunchEnv["BWRAP_AGENT_PODMAN_SOCKET"]; exists {
 		t.Fatalf("obsolete socket mode leaked into plan: %#v", plan.LaunchEnv)
+	}
+	if plan.LaunchEnv["XDG_RUNTIME_DIR"] != filepath.Join(plan.State, "run") {
+		t.Fatalf("outer runtime directory = %q", plan.LaunchEnv["XDG_RUNTIME_DIR"])
+	}
+	if !strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--setenv\x00XDG_RUNTIME_DIR\x00/run/bwrap-agent/runtime") {
+		t.Fatalf("sandbox runtime directory is not private and short: %#v", plan.Bwrap)
 	}
 }
 
@@ -466,7 +473,7 @@ func TestResolvePodmanModes(t *testing.T) {
 	}
 }
 
-func TestStateDirSymlinkIsResolved(t *testing.T) {
+func TestStateHomeSymlinkIsResolved(t *testing.T) {
 	root := t.TempDir()
 	realState := filepath.Join(root, "real")
 	if err := os.Mkdir(realState, 0o700); err != nil {
@@ -486,7 +493,8 @@ func TestStateDirSymlinkIsResolved(t *testing.T) {
 }
 
 func TestPrivatePortsBindHostLoopback(t *testing.T) {
-	plan, err := BuildPlan(Options{Project: ".", StateDir: t.TempDir(), Instance: "port-test", Network: "private", Podman: "off", TTY: "never", Publish: []string{"18080:8080", "15432:5432/udp"}, Command: []string{"/bin/true"}})
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	plan, err := BuildPlan(Options{Project: ".", Instance: "port-test", Network: "private", Podman: "off", TTY: "never", Publish: []string{"18080:8080", "15432:5432/udp"}, Command: []string{"/bin/true"}})
 	if err != nil {
 		t.Fatal(err)
 	}

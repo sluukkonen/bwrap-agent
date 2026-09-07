@@ -15,6 +15,18 @@ func managedTestOptions(project string) Options {
 	return Options{Project: project, Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"}}
 }
 
+func resolveTestInstance(t *testing.T, opts Options) (instanceIdentity, error) {
+	t.Helper()
+	identity, lock, err := resolveAndLockInstance(opts)
+	if err != nil {
+		return instanceIdentity{}, err
+	}
+	if err := lock.Close(); err != nil {
+		return instanceIdentity{}, err
+	}
+	return identity, nil
+}
+
 func TestManagedInstanceResolutionAndCollisionNames(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	parentA := t.TempDir()
@@ -27,22 +39,22 @@ func TestManagedInstanceResolutionAndCollisionNames(t *testing.T) {
 		}
 	}
 
-	first, err := resolveInstance(managedTestOptions(projectA))
+	first, err := resolveTestInstance(t, managedTestOptions(projectA))
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := resolveInstance(managedTestOptions(projectA))
+	again, err := resolveTestInstance(t, managedTestOptions(projectA))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Instance != "service" || again.Root != first.Root || !first.Managed {
+	if first.Instance != "service" || again.Root != first.Root {
 		t.Fatalf("unexpected reused identity: first=%#v again=%#v", first, again)
 	}
-	if first.State != filepath.Join(first.Root, "state") || first.LockPath != first.Root {
+	if first.State != filepath.Join(first.Root, "state") {
 		t.Fatalf("managed paths are not separated: %#v", first)
 	}
 
-	second, err := resolveInstance(managedTestOptions(projectB))
+	second, err := resolveTestInstance(t, managedTestOptions(projectB))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,35 +64,15 @@ func TestManagedInstanceResolutionAndCollisionNames(t *testing.T) {
 
 	explicit := managedTestOptions(projectB)
 	explicit.Instance = first.Instance
-	if _, err := resolveInstance(explicit); err == nil || !strings.Contains(err.Error(), "belongs to project") {
+	if _, err := resolveTestInstance(t, explicit); err == nil || !strings.Contains(err.Error(), "belongs to project") {
 		t.Fatalf("explicit cross-project reuse = %v", err)
-	}
-}
-
-func TestCustomStateIsUnmanaged(t *testing.T) {
-	stateHome := t.TempDir()
-	t.Setenv("BWRAP_AGENT_STATE_HOME", stateHome)
-	state := filepath.Join(t.TempDir(), "custom")
-	opts := managedTestOptions(t.TempDir())
-	opts.StateDir = state
-	opts.Instance = "display-label"
-	identity, err := resolveInstance(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if identity.Managed || identity.Instance != "display-label" || identity.State != state || identity.LockPath != state {
-		t.Fatalf("unexpected custom-state identity: %#v", identity)
-	}
-	records, err := managedInstanceRecords()
-	if err != nil || len(records) != 0 {
-		t.Fatalf("custom state appeared in registry: %#v, %v", records, err)
 	}
 }
 
 func TestManagedInstanceMetadataAndLastUse(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("BWRAP_AGENT_STATE_HOME", stateHome)
-	identity, err := resolveInstance(managedTestOptions(t.TempDir()))
+	identity, err := resolveTestInstance(t, managedTestOptions(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +116,7 @@ func TestInstanceListHumanJSONStatusAndUsage(t *testing.T) {
 		t.Fatalf("empty JSON list = %q, %v", output.String(), err)
 	}
 
-	identity, err := resolveInstance(managedTestOptions(t.TempDir()))
+	identity, err := resolveTestInstance(t, managedTestOptions(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,9 +159,27 @@ func TestInstanceTableEscapesControlCharacters(t *testing.T) {
 	}
 }
 
+func TestDeletionTombstonesAreInternalAndHidden(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	store, _, err := managedInstancesDirectory(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(store, deletionTombstonePrefix+"old-0123456789abcdef"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := listInstances(true, &output); err != nil || strings.TrimSpace(output.String()) != "[]" {
+		t.Fatalf("tombstone listing = %q, %v", output.String(), err)
+	}
+	if _, err := safeName(deletionTombstonePrefix + "user"); err == nil {
+		t.Fatal("reserved tombstone name unexpectedly accepted")
+	}
+}
+
 func TestInstanceDeleteConfirmationAndSafety(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	identity, err := resolveInstance(managedTestOptions(t.TempDir()))
+	identity, err := resolveTestInstance(t, managedTestOptions(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,11 +218,7 @@ func TestInstanceDeleteConfirmationAndSafety(t *testing.T) {
 
 func TestInstanceDeleteRejectsRunningInstance(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	identity, err := resolveInstance(managedTestOptions(t.TempDir()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	lock, err := acquireInstanceLock(identity)
+	identity, lock, err := resolveAndLockInstance(managedTestOptions(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +226,143 @@ func TestInstanceDeleteRejectsRunningInstance(t *testing.T) {
 	if err := deleteInstance(identity.Instance, true, false, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "running") {
 		t.Fatalf("running deletion = %v", err)
 	}
+}
+
+func TestInstanceLockDoesNotRecreateMissingRoot(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	identity, err := resolveTestInstance(t, managedTestOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(identity.Root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireInstanceLock(identity); err == nil {
+		t.Fatal("locking a deleted instance unexpectedly succeeded")
+	}
+	if _, err := os.Stat(identity.Root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lock attempt recreated deleted instance: %v", err)
+	}
+}
+
+func TestAllocatedDiskUsageIgnoresDisappearingFiles(t *testing.T) {
+	root := t.TempDir()
+	disappearing := filepath.Join(root, "disappearing")
+	if err := os.WriteFile(disappearing, bytes.Repeat([]byte{'x'}, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "stable"), bytes.Repeat([]byte{'y'}, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := allocatedDiskUsageWith(root, func(path string) (os.FileInfo, error) {
+		if path == disappearing {
+			return nil, os.ErrNotExist
+		}
+		return os.Lstat(path)
+	})
+	if err != nil || usage == 0 {
+		t.Fatalf("usage with disappearing file = %d, %v", usage, err)
+	}
+}
+
+func TestManagedStoreRejectsProtectedPathOverlap(t *testing.T) {
+	t.Run("inside project", func(t *testing.T) {
+		project := t.TempDir()
+		stateHome := filepath.Join(project, "state-home")
+		t.Setenv("BWRAP_AGENT_STATE_HOME", stateHome)
+		if _, _, err := resolveAndLockInstance(managedTestOptions(project)); err == nil || !strings.Contains(err.Error(), "overlaps project") {
+			t.Fatalf("overlapping store = %v", err)
+		}
+		if _, err := os.Stat(stateHome); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unsafe state home was created: %v", err)
+		}
+	})
+
+	t.Run("contains project", func(t *testing.T) {
+		root := t.TempDir()
+		project := filepath.Join(root, "instances", "checkout")
+		if err := os.MkdirAll(project, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("BWRAP_AGENT_STATE_HOME", root)
+		if _, _, err := resolveAndLockInstance(managedTestOptions(project)); err == nil || !strings.Contains(err.Error(), "overlaps project") {
+			t.Fatalf("containing store = %v", err)
+		}
+	})
+
+	t.Run("canonical symlink target", func(t *testing.T) {
+		root := t.TempDir()
+		project := filepath.Join(root, "project")
+		if err := os.MkdirAll(filepath.Join(project, "state-home"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(root, "state-link")
+		if err := os.Symlink(filepath.Join(project, "state-home"), link); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("BWRAP_AGENT_STATE_HOME", link)
+		if _, _, err := resolveAndLockInstance(managedTestOptions(project)); err == nil || !strings.Contains(err.Error(), "overlaps project") {
+			t.Fatalf("symlinked store = %v", err)
+		}
+	})
+
+	t.Run("project-owned lexical symlink", func(t *testing.T) {
+		root := t.TempDir()
+		project := filepath.Join(root, "project")
+		outside := filepath.Join(root, "outside-state")
+		if err := os.MkdirAll(project, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outside, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(project, "state-home")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("BWRAP_AGENT_STATE_HOME", link)
+		if _, _, err := resolveAndLockInstance(managedTestOptions(project)); err == nil || !strings.Contains(err.Error(), "overlaps project") {
+			t.Fatalf("project-owned state symlink = %v", err)
+		}
+	})
+
+	t.Run("intermediate symlink expansion", func(t *testing.T) {
+		root := t.TempDir()
+		project := filepath.Join(root, "project")
+		outside := filepath.Join(root, "outside-state")
+		if err := os.MkdirAll(project, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outside, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		alias := filepath.Join(root, "project-alias")
+		if err := os.Symlink(project, alias); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(project, "state-home")); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("BWRAP_AGENT_STATE_HOME", filepath.Join(alias, "state-home"))
+		if _, _, err := resolveAndLockInstance(managedTestOptions(project)); err == nil || !strings.Contains(err.Error(), "overlaps project") {
+			t.Fatalf("intermediate state symlink = %v", err)
+		}
+	})
+
+	t.Run("read-write bind", func(t *testing.T) {
+		root := t.TempDir()
+		project := filepath.Join(root, "project")
+		if err := os.Mkdir(project, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stateHome := filepath.Join(root, "state-home")
+		t.Setenv("BWRAP_AGENT_STATE_HOME", stateHome)
+		opts := managedTestOptions(project)
+		opts.RWBind = []string{root}
+		if _, _, err := resolveAndLockInstance(opts); err == nil || !strings.Contains(err.Error(), "overlaps read-write bind") {
+			t.Fatalf("writable-bind overlap = %v", err)
+		}
+	})
 }
 
 func TestInstanceCommandsParse(t *testing.T) {
@@ -239,11 +382,16 @@ func TestInstanceCommandsParse(t *testing.T) {
 	if _, code, err = parseOptions([]string{"run", "--name", "old", "/bin/true"}, &stdout, &stderr); err == nil || code != 2 {
 		t.Fatalf("old --name unexpectedly parsed: code=%d err=%v", code, err)
 	}
+	stdout.Reset()
+	stderr.Reset()
+	if _, code, err = parseOptions([]string{"run", "--state-dir", "/tmp/state", "/bin/true"}, &stdout, &stderr); err == nil || code != 2 {
+		t.Fatalf("removed --state-dir unexpectedly parsed: code=%d err=%v", code, err)
+	}
 }
 
 func TestCorruptManagedMetadataFailsClearly(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	identity, err := resolveInstance(managedTestOptions(t.TempDir()))
+	identity, err := resolveTestInstance(t, managedTestOptions(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}

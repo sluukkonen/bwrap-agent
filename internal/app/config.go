@@ -296,9 +296,6 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 	if cli.Instance != nil {
 		opts.Instance = *cli.Instance
 	}
-	if cli.StateDir != nil {
-		opts.StateDir = *cli.StateDir
-	}
 	agentConfig := true
 	environment := map[string]envDirective{}
 	apply := func(layer optionLayer) {

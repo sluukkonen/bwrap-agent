@@ -24,6 +24,9 @@ import (
 
 const instanceMetadataVersion = 1
 const instanceMetadataName = "metadata.json"
+const deletionTombstonePrefix = ".deleting-"
+
+var errManagedInstanceNotFound = errors.New("managed instance not found")
 
 type instanceMetadata struct {
 	Version    int       `json:"version"`
@@ -47,11 +50,7 @@ type instanceRecord struct {
 }
 
 func managedInstancesDirectory(create bool) (string, bool, error) {
-	base, err := stateBase()
-	if err != nil {
-		return "", false, err
-	}
-	directory, err := resolveState(filepath.Join(base, "instances"))
+	_, directory, err := managedInstancesPaths()
 	if err != nil {
 		return "", false, err
 	}
@@ -72,6 +71,87 @@ func managedInstancesDirectory(create bool) (string, bool, error) {
 		return "", false, fmt.Errorf("managed instance store is not a directory: %s", directory)
 	}
 	return directory, true, nil
+}
+
+func managedInstancesPaths() (string, string, error) {
+	base, err := stateBase()
+	if err != nil {
+		return "", "", err
+	}
+	base, err = filepath.Abs(base)
+	if err != nil {
+		return "", "", err
+	}
+	lexical := filepath.Clean(filepath.Join(base, "instances"))
+	resolved, err := resolveState(lexical)
+	if err != nil {
+		return "", "", err
+	}
+	return lexical, resolved, nil
+}
+
+func pathsOverlap(left, right string) bool {
+	return pathWithin(left, right) || pathWithin(right, left)
+}
+
+func pathResolutionCandidates(path string) ([]string, error) {
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("path is not absolute: %s", path)
+	}
+	parts := strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator))
+	seen := map[string]bool{}
+	var candidates []string
+	for count := 0; count <= len(parts); count++ {
+		prefix := string(filepath.Separator)
+		if count > 0 {
+			prefix = filepath.Join(prefix, filepath.Join(parts[:count]...))
+		}
+		resolvedPrefix, err := filepath.EvalSymlinks(prefix)
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		candidate := resolvedPrefix
+		if count < len(parts) {
+			candidate = filepath.Join(candidate, filepath.Join(parts[count:]...))
+		}
+		candidate = filepath.Clean(candidate)
+		if !seen[candidate] {
+			seen[candidate] = true
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates, nil
+}
+
+func validateInstanceStorePlacement(lexical, resolved, project, gitCommon string, rwBind []string) error {
+	type protectedPath struct {
+		label string
+		path  string
+	}
+	protected := []protectedPath{{"project", project}}
+	if gitCommon != "" {
+		protected = append(protected, protectedPath{"external Git metadata", gitCommon})
+	}
+	for _, path := range rwBind {
+		protected = append(protected, protectedPath{"read-write bind", path})
+	}
+	stores, err := pathResolutionCandidates(lexical)
+	if err != nil {
+		return fmt.Errorf("resolve managed instance store: %w", err)
+	}
+	stores = append(stores, resolved)
+	for _, store := range stores {
+		for _, candidate := range protected {
+			if pathsOverlap(store, candidate.path) {
+				return fmt.Errorf("managed instance store %s overlaps %s %s", store, candidate.label, candidate.path)
+			}
+		}
+	}
+	return nil
 }
 
 func readInstanceMetadata(root string) (instanceMetadata, error) {
@@ -197,14 +277,52 @@ func existingManagedInstance(store, name string) (instanceMetadata, bool, error)
 	return metadata, true, nil
 }
 
-func resolveManagedInstance(project, requested string) (instanceIdentity, error) {
-	store, _, err := managedInstancesDirectory(true)
+func resolveBindPaths(paths []string) ([]string, error) {
+	resolved := make([]string, 0, len(paths))
+	for _, path := range paths {
+		canonical, err := resolveExisting(path)
+		if err != nil {
+			return nil, err
+		}
+		resolved = append(resolved, canonical)
+	}
+	return resolved, nil
+}
+
+func resolveAndLockInstance(opts Options) (instanceIdentity, *instanceLock, error) {
+	project, err := resolveProjectDirectory(opts.Project)
 	if err != nil {
-		return instanceIdentity{}, err
+		return instanceIdentity{}, nil, err
+	}
+	gitCommon, err := validatedExternalGitCommonDir(project)
+	if err != nil {
+		return instanceIdentity{}, nil, err
+	}
+	roBind, err := resolveBindPaths(opts.ROBind)
+	if err != nil {
+		return instanceIdentity{}, nil, err
+	}
+	rwBind, err := resolveBindPaths(opts.RWBind)
+	if err != nil {
+		return instanceIdentity{}, nil, err
+	}
+	return resolveManagedInstanceLocked(project, opts.Instance, gitCommon, roBind, rwBind)
+}
+
+func resolveManagedInstanceLocked(project, requested, gitCommon string, roBind, rwBind []string) (instanceIdentity, *instanceLock, error) {
+	lexicalStore, store, err := managedInstancesPaths()
+	if err != nil {
+		return instanceIdentity{}, nil, err
+	}
+	if err := validateInstanceStorePlacement(lexicalStore, store, project, gitCommon, rwBind); err != nil {
+		return instanceIdentity{}, nil, err
+	}
+	if err := secureMkdir(store, 0o700); err != nil {
+		return instanceIdentity{}, nil, err
 	}
 	registryLock, err := acquireDirectoryLock(store, false)
 	if err != nil {
-		return instanceIdentity{}, fmt.Errorf("lock managed instance store: %w", err)
+		return instanceIdentity{}, nil, fmt.Errorf("lock managed instance store: %w", err)
 	}
 	defer func() {
 		if registryLock != nil {
@@ -217,38 +335,56 @@ func resolveManagedInstance(project, requested string) (instanceIdentity, error)
 		name = defaultName(project)
 	}
 	if name, err = safeName(name); err != nil {
-		return instanceIdentity{}, err
+		return instanceIdentity{}, nil, err
 	}
 	metadata, found, err := existingManagedInstance(store, name)
 	if err != nil {
-		return instanceIdentity{}, err
+		return instanceIdentity{}, nil, err
 	}
 	if found && metadata.Project != project {
 		if requested != "" {
-			return instanceIdentity{}, fmt.Errorf("instance %s belongs to project %s", name, metadata.Project)
+			return instanceIdentity{}, nil, fmt.Errorf("instance %s belongs to project %s", name, metadata.Project)
 		}
 		name = collisionName(project)
 		metadata, found, err = existingManagedInstance(store, name)
 		if err != nil {
-			return instanceIdentity{}, err
+			return instanceIdentity{}, nil, err
 		}
 		if found && metadata.Project != project {
-			return instanceIdentity{}, fmt.Errorf("instance name collision for %s; use --instance", name)
+			return instanceIdentity{}, nil, fmt.Errorf("instance name collision for %s; use --instance", name)
 		}
 	}
 	if !found {
 		if _, err := createManagedInstance(store, name, project); err != nil {
-			return instanceIdentity{}, fmt.Errorf("create instance %s: %w", name, err)
+			return instanceIdentity{}, nil, fmt.Errorf("create instance %s: %w", name, err)
 		}
 	}
 	root := filepath.Join(store, name)
-	return instanceIdentity{Project: project, Instance: name, State: filepath.Join(root, "state"), LockPath: root, Root: root, Managed: true}, nil
+	identity := instanceIdentity{
+		Project: project, Instance: name, State: filepath.Join(root, "state"), Root: root,
+		GitCommon: gitCommon, ROBind: roBind, RWBind: rwBind,
+	}
+	lock, err := acquireInstanceLock(identity)
+	if err != nil {
+		return instanceIdentity{}, nil, err
+	}
+	current, found, err := existingManagedInstance(store, name)
+	if err != nil || !found || current.Project != project {
+		_ = lock.Close()
+		if err != nil {
+			return instanceIdentity{}, nil, err
+		}
+		return instanceIdentity{}, nil, fmt.Errorf("managed instance %s changed while acquiring its lock", name)
+	}
+	if err := registryLock.Close(); err != nil {
+		_ = lock.Close()
+		return instanceIdentity{}, nil, err
+	}
+	registryLock = nil
+	return identity, lock, nil
 }
 
 func markInstanceUsed(identity instanceIdentity) error {
-	if !identity.Managed {
-		return nil
-	}
 	metadata, err := readInstanceMetadata(identity.Root)
 	if err != nil {
 		return err
@@ -266,14 +402,24 @@ type fileIdentity struct {
 }
 
 func allocatedDiskUsage(root string) (uint64, error) {
+	return allocatedDiskUsageWith(root, os.Lstat)
+}
+
+func allocatedDiskUsageWith(root string, lstat func(string) (os.FileInfo, error)) (uint64, error) {
 	seen := map[fileIdentity]bool{}
 	var total uint64
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if errors.Is(walkErr, os.ErrNotExist) {
+				return nil
+			}
 			return walkErr
 		}
-		info, err := os.Lstat(path)
+		info, err := lstat(path)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
 			return err
 		}
 		stat, ok := info.Sys().(*syscall.Stat_t)
@@ -313,7 +459,7 @@ func inspectManagedInstance(store, name string) (instanceRecord, error) {
 		return instanceRecord{}, err
 	}
 	if !found {
-		return instanceRecord{}, fmt.Errorf("instance not found: %s", name)
+		return instanceRecord{}, fmt.Errorf("%w: %s", errManagedInstanceNotFound, name)
 	}
 	root := filepath.Join(store, name)
 	status, err := instanceStatus(root)
@@ -340,17 +486,18 @@ func managedInstanceRecords() ([]instanceRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lock managed instance store: %w", err)
 	}
+	defer func() {
+		if registryLock != nil {
+			_ = registryLock.Close()
+		}
+	}()
 	entries, err := os.ReadDir(store)
-	closeErr := registryLock.Close()
 	if err != nil {
 		return nil, err
 	}
-	if closeErr != nil {
-		return nil, closeErr
-	}
 	records := make([]instanceRecord, 0, len(entries))
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".deleting-") {
+		if strings.HasPrefix(entry.Name(), deletionTombstonePrefix) {
 			continue
 		}
 		if !entry.IsDir() {
@@ -359,12 +506,49 @@ func managedInstanceRecords() ([]instanceRecord, error) {
 		if _, err := safeName(entry.Name()); err != nil {
 			return nil, fmt.Errorf("invalid entry in managed instance store: %s", entry.Name())
 		}
-		record, err := inspectManagedInstance(store, entry.Name())
+		metadata, found, err := existingManagedInstance(store, entry.Name())
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, errManagedInstanceNotFound) {
+				continue
+			}
 			return nil, err
 		}
-		records = append(records, record)
+		if !found {
+			continue
+		}
+		root := filepath.Join(store, entry.Name())
+		status, err := instanceStatus(root)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect instance %s status: %w", entry.Name(), err)
+		}
+		records = append(records, instanceRecord{
+			Name: entry.Name(), Project: metadata.Project, Status: status,
+			CreatedAt: metadata.CreatedAt, LastUsedAt: metadata.LastUsedAt,
+			StatePath: filepath.Join(root, "state"), root: root, metadata: metadata,
+		})
 	}
+	if err := registryLock.Close(); err != nil {
+		return nil, err
+	}
+	registryLock = nil
+	sized := records[:0]
+	for _, record := range records {
+		usage, err := allocatedDiskUsage(record.root)
+		if err != nil {
+			return nil, fmt.Errorf("measure instance %s: %w", record.Name, err)
+		}
+		if _, err := os.Lstat(record.root); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+		record.DiskUsageBytes = usage
+		sized = append(sized, record)
+	}
+	records = sized
 	sort.Slice(records, func(left, right int) bool {
 		if records[left].LastUsedAt.Equal(records[right].LastUsedAt) {
 			return records[left].Name < records[right].Name
@@ -490,7 +674,7 @@ func deleteManagedInstance(name string, expected instanceMetadata) error {
 	if _, err := rand.Read(random); err != nil {
 		return err
 	}
-	tombstone := filepath.Join(store, ".deleting-"+name+"-"+hex.EncodeToString(random))
+	tombstone := filepath.Join(store, deletionTombstonePrefix+name+"-"+hex.EncodeToString(random))
 	if err := os.Rename(root, tombstone); err != nil {
 		return err
 	}

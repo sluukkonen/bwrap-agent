@@ -9,6 +9,8 @@ case "$binary" in
 esac
 test_root=$(mktemp -d /tmp/bwrap-agent-integration.XXXXXX)
 trap 'rm -rf -- "$test_root"' EXIT HUP INT TERM
+BWRAP_AGENT_STATE_HOME="$test_root/state-home"
+export BWRAP_AGENT_STATE_HOME
 
 config_create_project="$test_root/config-create"
 mkdir "$config_create_project"
@@ -40,7 +42,6 @@ test "$(BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list --json)" 
 
 "$binary" \
     run \
-    --state-dir "$test_root/host" \
     --instance integration-host \
     --podman off \
     --network host \
@@ -49,7 +50,6 @@ test "$(BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list --json)" 
 
 "$binary" \
     run \
-    --state-dir "$test_root/private" \
     --instance integration-private \
     --podman off \
     --network private \
@@ -79,7 +79,6 @@ printf '%s\n' \
 CONFIG_HOST=from-host XDG_CONFIG_HOME="$config_home" "$binary" \
     run \
     --project "$config_project" \
-    --state-dir "$test_root/config-state" \
     --instance integration-config \
     --env CONFIG_CLI=cli \
     /bin/sh -ec '
@@ -95,7 +94,6 @@ mkdir "$test_root/path-without-podman"
 ln -s "$(command -v bwrap)" "$test_root/path-without-podman/bwrap"
 PATH="$test_root/path-without-podman" "$binary" \
     run \
-    --state-dir "$test_root/auto-without-podman" \
     --instance integration-auto-without-podman \
     --network host \
     --tty never \
@@ -103,20 +101,17 @@ PATH="$test_root/path-without-podman" "$binary" \
 
 readonly_repository="$test_root/read-only-repository"
 readonly_project="$test_root/read-only-worktree"
-readonly_state="$readonly_project/.sandbox-state"
 git init -q "$readonly_repository"
 git -C "$readonly_repository" config user.name "Integration Test"
 git -C "$readonly_repository" config user.email "integration@example.invalid"
-printf '.sandbox-state/\n' >"$readonly_repository/.gitignore"
 printf 'unchanged\n' >"$readonly_repository/tracked"
-git -C "$readonly_repository" add .gitignore tracked
+git -C "$readonly_repository" add tracked
 git -C "$readonly_repository" commit -qm initial
 git -C "$readonly_repository" worktree add -q --detach "$readonly_project" HEAD
 
 "$binary" \
     run \
     --project "$readonly_project" \
-    --state-dir "$readonly_state" \
     --instance integration-state-only \
     --write-policy state-only \
     --podman off \
@@ -133,12 +128,11 @@ git -C "$readonly_repository" worktree add -q --detach "$readonly_project" HEAD
         printf "state-only-ok\n"
     '
 test ! -e "$readonly_project/write-probe"
-test -e "$readonly_state/home/state-probe"
+test -e "$BWRAP_AGENT_STATE_HOME/instances/integration-state-only/state/home/state-probe"
 
 "$binary" \
     run \
     --project "$readonly_project" \
-    --state-dir "$readonly_state" \
     --instance integration-state-only-podman \
     --write-policy state-only \
     --network host \
@@ -152,7 +146,6 @@ test -e "$readonly_state/home/state-probe"
 
 "$binary" \
     run \
-    --state-dir "$test_root/podman" \
     --instance integration-podman \
     --network host \
     --tty never \
@@ -160,7 +153,6 @@ test -e "$readonly_state/home/state-probe"
 
 "$binary" \
     run \
-    --state-dir "$test_root/socket" \
     --instance integration-socket \
     --network host \
     --tty never \
@@ -169,7 +161,7 @@ test -e "$readonly_state/home/state-probe"
 if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     "$binary" \
         run \
-        --state-dir "$test_root/containers" \
+        --project "$readonly_project" \
         --instance integration-containers \
         --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" \
         --network host \
@@ -183,8 +175,7 @@ if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     "$binary" \
         run \
         --project "$readonly_project" \
-        --state-dir "$test_root/containers" \
-        --instance integration-read-only-container \
+        --instance integration-containers \
         --write-policy state-only \
         --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" \
         --network host \

@@ -36,7 +36,7 @@ Use `--instance` to select a different persistent instance explicitly. An explic
 $ ./bin/bwrap-agent run --instance feature-payments --project ../feature-payments opencode
 ```
 
-An instance is protected by a fail-fast exclusive lock. If it is already running, use a separate worktree (recommended), a different `--instance`, or a different `--state-dir`. Agent-native session switching remains available inside one sandbox process. The launcher holds a host-only advisory lock for the instance; the kernel releases it automatically when bwrap-agent exits or crashes.
+An instance is protected by a fail-fast exclusive lock. If it is already running, use a separate worktree (recommended) or a different `--instance`. Agent-native session switching remains available inside one sandbox process. The launcher holds a host-only advisory lock for the instance; the kernel releases it automatically when bwrap-agent exits or crashes.
 
 Managed instances live under `~/.local/state/bwrap-agent/instances`. The host-only instance directory contains `metadata.json` plus the sandbox-writable `state/` directory. List instances, including their allocated disk usage and running status, with:
 
@@ -52,7 +52,7 @@ $ ./bin/bwrap-agent instance delete feature-payments
 $ ./bin/bwrap-agent instance delete feature-payments --yes
 ```
 
-Running instances cannot be deleted. A custom `--state-dir` is intentionally unmanaged: `--instance` is only its display/lock label, and it will not be listed or deleted by these commands. Automatic pruning is planned but not implemented yet.
+Running instances cannot be deleted. Automatic pruning is planned but not implemented yet. To relocate the complete managed store, set `BWRAP_AGENT_STATE_HOME`; otherwise the standard `XDG_STATE_HOME` location is honored. The store must remain separate from projects, external Git metadata, and explicit read-write binds.
 
 ## Configuration
 
@@ -95,7 +95,7 @@ Scalar settings are replaced by higher-precedence layers. `publish`, `ro_bind`, 
 
 > **Warning:** Project configuration is fully trusted and is evaluated before the sandbox starts. It can request arbitrary host bind mounts, select host networking, and expose sensitive host environment variables. Inspect `.bwrap-agent.toml` in an untrusted checkout or launch with `run --no-project-config`.
 
-`project`, `instance`, `state_dir`, the target command, and action/recovery options are intentionally not accepted in TOML. Use `run --dry-run` to inspect the effective launch plan and the user/project config files that were loaded.
+`project`, `instance`, the target command, and action/recovery options are intentionally not accepted in TOML. Use `run --dry-run` to inspect the effective launch plan and the user/project config files that were loaded.
 
 For inspection or verification without allowing project changes, use the `state-only` write policy:
 
@@ -149,7 +149,7 @@ Do not bind the host Podman socket into this sandbox. Podman's API is deliberate
 
 ```text
 --project PATH             expose PATH as the policy-controlled project directory
---instance NAME            select a managed instance name or label a custom state directory
+--instance NAME            select a managed instance name
 --network private|host|none
                            choose isolated (default), shared, or disabled networking
 --publish PORT             publish a private-network port on host loopback
@@ -163,7 +163,6 @@ Do not bind the host Podman socket into this sandbox. Podman's API is deliberate
 --write-policy workspace|state-only
                            allow workspace writes (default), or only instance-state writes
 --[no-]agent-config        enable or disable detected agent configuration import
---state-dir PATH          override the per-instance state path
 --no-project-config       skip .bwrap-agent.toml
 --no-config               skip user and project configuration
 ```
