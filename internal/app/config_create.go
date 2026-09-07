@@ -68,8 +68,8 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # EMPTY = ""
 # FROM_HOST = { inherit = true }
 
-# Project selection, dry-run mode, and the target command are run-command
-# options only.
+# Project selection, dry-run mode, the control-file protection escape hatch,
+# and the target command are run-command options only.
 `
 
 func createProjectConfig(directory string) error {

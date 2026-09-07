@@ -118,6 +118,86 @@ HOME="$agent_home" XDG_CONFIG_HOME="$agent_config" XDG_DATA_HOME="$agent_data" "
 test ! -e "$agent_config/opencode/write-probe"
 printf 'opencode-agent-ok\n'
 
+protected_project="$test_root/protected-project"
+mkdir -p "$protected_project/.opencode/plugins" "$protected_project/.pi/prompts"
+printf '{}\n' >"$protected_project/opencode.json"
+printf '{}\n' >"$protected_project/.opencode/opencode.json"
+printf '{}\n' >"$protected_project/.pi/settings.json"
+printf '# trusted host configuration\n' >"$protected_project/.bwrap-agent.toml"
+git init -q "$protected_project"
+"$binary" \
+    run --project "$protected_project" --instance integration-protected --podman off --network host --tty never \
+    /bin/sh -ec '
+        printf source >ordinary-source
+        for directory in .opencode .pi .git
+        do
+            if mv "$directory" "$directory-moved" 2>/dev/null; then
+                echo "unexpectedly renamed protected control directory: $directory" >&2
+                exit 1
+            fi
+        done
+        for path in \
+            .bwrap-agent.toml opencode.json .opencode/opencode.json \
+            .opencode/plugins/new-plugin .opencode/tools/new-tool \
+            .pi/settings.json .pi/extensions/new-extension .pi/npm/new-package .pi/git/new-package \
+            .git/config .git/hooks/new-hook .git/config.worktree
+        do
+            if (printf blocked >"$path") 2>/dev/null; then
+                echo "unexpectedly wrote protected path: $path" >&2
+                exit 1
+            fi
+        done
+        printf editable >.pi/prompts/prompt.md
+        printf editable >.mcp.json
+        printf "control-paths-ok\n"
+    '
+test "$(cat "$protected_project/ordinary-source")" = source
+test "$(cat "$protected_project/.pi/prompts/prompt.md")" = editable
+test "$(cat "$protected_project/.mcp.json")" = editable
+
+concurrent_project="$test_root/concurrent-control-project"
+mkdir "$concurrent_project"
+"$binary" \
+    run --project "$concurrent_project" --instance integration-concurrent-one --podman off --network host --tty never \
+    /bin/sh -ec 'printf started >started; while ! test -e release; do sleep 0.02; done' &
+first_launcher=$!
+while ! test -e "$concurrent_project/started"; do sleep 0.02; done
+"$binary" \
+    run --project "$concurrent_project" --instance integration-concurrent-two --podman off --network host --tty never \
+    /bin/true
+test -e "$concurrent_project/.bwrap-agent.toml"
+test -e "$concurrent_project/opencode.json"
+touch "$concurrent_project/release"
+wait "$first_launcher"
+test ! -e "$concurrent_project/.bwrap-agent.toml"
+test ! -e "$concurrent_project/opencode.json"
+test ! -e "$concurrent_project/opencode.jsonc"
+test ! -e "$concurrent_project/.opencode"
+test ! -e "$concurrent_project/.pi"
+printf 'concurrent-control-paths-ok\n'
+
+signal_project="$test_root/signal-control-project"
+mkdir "$signal_project"
+"$binary" \
+    run --project "$signal_project" --instance integration-signal-cleanup --podman off --network host --tty never \
+    /bin/sh -ec 'while :; do sleep 1; done' &
+signal_launcher=$!
+while ! test -e "$signal_project/.bwrap-agent.toml"; do
+    kill -0 "$signal_launcher"
+    sleep 0.01
+done
+kill -TERM "$signal_launcher"
+if wait "$signal_launcher"; then
+    echo 'signal cleanup launcher unexpectedly succeeded' >&2
+    exit 1
+fi
+test ! -e "$signal_project/.bwrap-agent.toml"
+test ! -e "$signal_project/opencode.json"
+test ! -e "$signal_project/opencode.jsonc"
+test ! -e "$signal_project/.opencode"
+test ! -e "$signal_project/.pi"
+printf 'signal-control-paths-ok\n'
+
 pi_home="$test_root/pi-home"
 pi_agent="$pi_home/.pi/agent"
 mkdir -p "$pi_agent/extensions" "$agent_bins"

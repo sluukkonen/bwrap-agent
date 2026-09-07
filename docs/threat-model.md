@@ -19,6 +19,7 @@ The boundary is intended to protect hidden host files, other agent processes, ho
 
 - Host operating-system files under `/usr`, `/etc`, `/sys`, and optional tool stores are readable. `/etc` can contain operational metadata; deployments needing confidentiality should replace it with an allowlist.
 - The default `workspace` policy grants write access to validated external Git metadata, including refs and metadata shared by linked worktrees.
+- In `workspace`, conventional Git and supported-agent control surfaces are overlaid read-only, including paths that do not yet exist. This reduces persistence through hooks, configuration, plugins, and tools while leaving ordinary project content writable. `run --allow-control-file-writes` deliberately disables this protection for the run.
 - Explicit `run --rw-bind` paths are fully writable and are therefore rejected by `state-only`.
 - Project-local `.bwrap-agent.toml` is fully trusted and evaluated by the host launcher before sandbox creation. It can request arbitrary read-only or read-write binds, select host networking, copy explicitly named host environment variables into the sandbox, and select an instance name owned by that canonical project. Cross-project instance reuse is rejected. Use `run --no-project-config` for untrusted checkouts.
 - Recognized host agent configuration and executable resources are exposed read-only. Path overrides and automatically discovered sources are rejected if a sandbox-writable path could retarget them, but the configuration itself is trusted and may execute plugins or refer to deliberately exposed resources.
@@ -38,5 +39,7 @@ The Podman API grants the socket holder full Podman functionality. An agent coul
 - Automatic host port allocation has a race.
 - Concurrent use of one instance is rejected by an exclusive host-side lock; separate agents need separate worktrees or instance names.
 - Managed instances can be listed and deleted explicitly, but automatic age-based pruning and component-specific reset are not implemented.
+- Control-path protection is path-based. It does not interpret custom Git `core.hooksPath` values, arbitrary external plugin references, hard-link aliases created before launch, or every future agent convention. A repository initialized during a run receives Git-specific protection on its next launch.
 - Only current Fedora-like and conventional merged-`/usr` layouts have been exercised; a compatibility test matrix is needed.
 - Detached processes are stopped best-effort. A systemd scope with cgroup kill semantics should enforce cleanup.
+- Missing control paths require temporary host-side mountpoint inodes while a sandbox is running. Normal exit and handled signals remove the exact inodes. An uncatchable launcher termination can leave neutral, restrictive placeholders temporarily; the project registry lets the next protected launch verify and reuse them, and its last active launcher removes them.

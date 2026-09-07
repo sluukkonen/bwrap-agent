@@ -295,14 +295,15 @@ func resolveEnvironment(directives map[string]envDirective, hostEnvironment []st
 
 func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources []ConfigSource, hostEnvironment []string) (Options, error) {
 	opts := Options{
-		Project:     project,
-		Network:     "private",
-		Podman:      "auto",
-		WritePolicy: "workspace",
-		TTY:         "auto",
-		DryRun:      cli.DryRun,
-		Command:     append([]string(nil), cli.Command...),
-		ConfigFiles: append([]ConfigSource(nil), sources...),
+		Project:                project,
+		Network:                "private",
+		Podman:                 "auto",
+		WritePolicy:            "workspace",
+		TTY:                    "auto",
+		DryRun:                 cli.DryRun,
+		AllowControlFileWrites: cli.AllowControlFileWrites,
+		Command:                append([]string(nil), cli.Command...),
+		ConfigFiles:            append([]ConfigSource(nil), sources...),
 	}
 	agentConfig := true
 	environment := map[string]envDirective{}

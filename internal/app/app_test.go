@@ -225,6 +225,7 @@ func TestHelpIsHandledWithoutBuildingPlan(t *testing.T) {
 		"--network=private|host|none",
 		"--podman=auto|on|off",
 		"--write-policy=workspace|state-only",
+		"--allow-control-file-writes",
 		"--tty=auto|always|never",
 		"private (isolated via pasta), host (shared), or none (disabled)",
 		"auto (enable if found), on (require), or off (disable)",

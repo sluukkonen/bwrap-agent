@@ -3,6 +3,9 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +14,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -52,6 +57,13 @@ func launchErrorCode(err error) int {
 }
 
 func runDirect(argv []string, environment map[string]string, input, output, errorOutput *os.File) int {
+	signals := make(chan os.Signal, 8)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	return runDirectSignals(argv, environment, input, output, errorOutput, signals)
+}
+
+func runDirectSignals(argv []string, environment map[string]string, input, output, errorOutput *os.File, signals <-chan os.Signal) int {
 	if len(argv) == 0 {
 		fmt.Fprintln(errorOutput, "bwrap-agent: failed to launch: empty command")
 		return 126
@@ -63,8 +75,6 @@ func runDirect(argv []string, environment map[string]string, input, output, erro
 		fmt.Fprintf(errorOutput, "bwrap-agent: failed to launch: %v\n", err)
 		return launchErrorCode(err)
 	}
-	signals := make(chan os.Signal, 8)
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	done := make(chan struct{})
 	go func() {
 		for {
@@ -78,7 +88,6 @@ func runDirect(argv []string, environment map[string]string, input, output, erro
 	}()
 	err := command.Wait()
 	close(done)
-	signal.Stop(signals)
 	return exitStatus(err)
 }
 
@@ -157,6 +166,13 @@ func exitStatus(err error) int {
 }
 
 func runWithPTY(argv []string, environment map[string]string, input, output *os.File) int {
+	signals := make(chan os.Signal, 8)
+	signal.Notify(signals, syscall.SIGWINCH, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
+	defer signal.Stop(signals)
+	return runWithPTYSignals(argv, environment, input, output, signals)
+}
+
+func runWithPTYSignals(argv []string, environment map[string]string, input, output *os.File, signals <-chan os.Signal) int {
 	interactive := isTerminal(input.Fd())
 	terminal := input
 	if !interactive {
@@ -209,8 +225,6 @@ func runWithPTY(argv []string, environment map[string]string, input, output *os.
 	}
 	slave.Close()
 
-	signals := make(chan os.Signal, 8)
-	signal.Notify(signals, syscall.SIGWINCH, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 	doneSignals := make(chan struct{})
 	go func() {
 		for {
@@ -227,19 +241,258 @@ func runWithPTY(argv []string, environment map[string]string, input, output *os.
 			}
 		}
 	}()
-
 	relayErr := relayPTY(int(input.Fd()), int(output.Fd()), int(master.Fd()), interactive)
 	if relayErr != nil {
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
 	}
 	waitErr := command.Wait()
 	close(doneSignals)
-	signal.Stop(signals)
 	if relayErr != nil && !errors.Is(relayErr, unix.EIO) {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: PTY relay failed: %v\n", relayErr)
 		return 126
 	}
 	return exitStatus(waitErr)
+}
+
+type placeholderIdentity struct {
+	Path   string          `json:"path"`
+	Kind   controlPathKind `json:"kind"`
+	Device uint64          `json:"device"`
+	Inode  uint64          `json:"inode"`
+}
+
+type launchControlFiles struct {
+	root       string
+	lifetimeFD int
+	once       sync.Once
+}
+
+func createControlPlaceholder(cleanup controlCleanup) (placeholderIdentity, error) {
+	if cleanup.kind == controlDirectory {
+		if err := os.Mkdir(cleanup.path, 0o700); err != nil {
+			return placeholderIdentity{}, err
+		}
+	} else {
+		fd, err := unix.Open(cleanup.path, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+		if err != nil {
+			return placeholderIdentity{}, err
+		}
+		file := os.NewFile(uintptr(fd), cleanup.path)
+		if cleanup.kind == controlJSONFile {
+			if _, err := file.Write([]byte("{}\n")); err != nil {
+				_ = file.Close()
+				_ = os.Remove(cleanup.path)
+				return placeholderIdentity{}, err
+			}
+		}
+		if err := file.Close(); err != nil {
+			_ = os.Remove(cleanup.path)
+			return placeholderIdentity{}, err
+		}
+	}
+	info, err := os.Lstat(cleanup.path)
+	if err != nil {
+		return placeholderIdentity{}, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return placeholderIdentity{}, fmt.Errorf("could not identify control placeholder %s", cleanup.path)
+	}
+	return placeholderIdentity{Path: cleanup.path, Kind: cleanup.kind, Device: uint64(stat.Dev), Inode: stat.Ino}, nil
+}
+
+func removeControlPlaceholder(placeholder placeholderIdentity) error {
+	info, err := os.Lstat(placeholder.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || uint64(stat.Dev) != placeholder.Device || stat.Ino != placeholder.Inode {
+		return fmt.Errorf("control placeholder changed before cleanup: %s", placeholder.Path)
+	}
+	if (placeholder.Kind == controlDirectory) != info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("control placeholder type changed before cleanup: %s", placeholder.Path)
+	}
+	return os.Remove(placeholder.Path)
+}
+
+func controlCoordinationRoot(project string) (string, error) {
+	base, err := stateBase()
+	if err != nil {
+		return "", err
+	}
+	base, err = resolveState(base)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(project))
+	return filepath.Join(base, "control-projects", hex.EncodeToString(digest[:16])), nil
+}
+
+func readControlRegistry(root string) ([]placeholderIdentity, error) {
+	content, err := readSmallRegularFile(filepath.Join(root, "placeholders.json"), 1024*1024)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var placeholders []placeholderIdentity
+	if err := json.Unmarshal([]byte(content), &placeholders); err != nil {
+		return nil, err
+	}
+	return placeholders, nil
+}
+
+func writeControlRegistry(root string, placeholders []placeholderIdentity) error {
+	content, err := json.Marshal(placeholders)
+	if err != nil {
+		return err
+	}
+	_, err = writeStateFile(root, "placeholders.json", append(content, '\n'), 0o600)
+	return err
+}
+
+func placeholderMatches(placeholder placeholderIdentity) bool {
+	info, err := os.Lstat(placeholder.Path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || (placeholder.Kind == controlDirectory) != info.IsDir() {
+		return false
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && uint64(stat.Dev) == placeholder.Device && stat.Ino == placeholder.Inode
+}
+
+func newLaunchControlFiles(project string) (*launchControlFiles, error) {
+	root, err := controlCoordinationRoot(project)
+	if err != nil {
+		return nil, err
+	}
+	if err := secureMkdir(root, 0o700); err != nil {
+		return nil, err
+	}
+	fd, err := unix.Open(filepath.Join(root, "lifetime.lock"), unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(fd, unix.LOCK_SH); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	return &launchControlFiles{root: root, lifetimeFD: fd}, nil
+}
+
+func (control *launchControlFiles) prepare(cleanup []controlCleanup) error {
+	mutation, err := acquireDirectoryLock(control.root, false)
+	if err != nil {
+		return err
+	}
+	defer mutation.Close()
+	registry, err := readControlRegistry(control.root)
+	if err != nil {
+		return err
+	}
+	valid := registry[:0]
+	for _, placeholder := range registry {
+		if placeholderMatches(placeholder) {
+			valid = append(valid, placeholder)
+		}
+	}
+	registry = valid
+	byPath := make(map[string]placeholderIdentity, len(registry))
+	for _, placeholder := range registry {
+		byPath[placeholder.Path] = placeholder
+	}
+	for _, candidate := range cleanup {
+		if existing, found := byPath[candidate.path]; found {
+			if existing.Kind != candidate.kind {
+				return fmt.Errorf("managed control placeholder has unexpected type: %s", candidate.path)
+			}
+			continue
+		}
+		if _, err := os.Lstat(candidate.path); err == nil {
+			return fmt.Errorf("control path appeared during launch planning: %s", candidate.path)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	var created []placeholderIdentity
+	rollback := func() {
+		for index := len(created) - 1; index >= 0; index-- {
+			_ = removeControlPlaceholder(created[index])
+		}
+	}
+	for _, candidate := range cleanup {
+		if _, found := byPath[candidate.path]; found {
+			continue
+		}
+		placeholder, err := createControlPlaceholder(candidate)
+		if err != nil {
+			rollback()
+			return fmt.Errorf("create temporary control placeholder %s: %w", candidate.path, err)
+		}
+		registry = append(registry, placeholder)
+		created = append(created, placeholder)
+	}
+	if err := writeControlRegistry(control.root, registry); err != nil {
+		rollback()
+		return err
+	}
+	return nil
+}
+
+func (control *launchControlFiles) Close() error {
+	if control == nil {
+		return nil
+	}
+	var result error
+	control.once.Do(func() {
+		mutation, err := acquireDirectoryLock(control.root, false)
+		if err != nil {
+			result = err
+			_ = unix.Flock(control.lifetimeFD, unix.LOCK_UN)
+			_ = unix.Close(control.lifetimeFD)
+			control.lifetimeFD = -1
+			return
+		}
+		defer mutation.Close()
+		_ = unix.Flock(control.lifetimeFD, unix.LOCK_UN)
+		if err := unix.Flock(control.lifetimeFD, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+			_ = unix.Close(control.lifetimeFD)
+			control.lifetimeFD = -1
+			if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+				result = err
+			}
+			return
+		}
+		registry, err := readControlRegistry(control.root)
+		if err != nil {
+			result = err
+		} else {
+			sort.Slice(registry, func(i, j int) bool { return len(registry[i].Path) > len(registry[j].Path) })
+			remaining := registry[:0]
+			for _, placeholder := range registry {
+				if !placeholderMatches(placeholder) {
+					continue
+				}
+				if err := removeControlPlaceholder(placeholder); err != nil {
+					remaining = append(remaining, placeholder)
+					if result == nil {
+						result = err
+					}
+				}
+			}
+			if err := writeControlRegistry(control.root, remaining); err != nil && result == nil {
+				result = err
+			}
+		}
+		_ = unix.Flock(control.lifetimeFD, unix.LOCK_UN)
+		_ = unix.Close(control.lifetimeFD)
+		control.lifetimeFD = -1
+	})
+	return result
 }
 
 func relayPTY(input, output, master int, interactive bool) error {

@@ -28,6 +28,8 @@ $ ./bin/bwrap-agent run --project . bash
 
 The `run` command requires a program; there is no implicit default agent. The launcher currently detects OpenCode and Pi by executable basename. Their user-managed host configuration, extensions, skills, and packages are exposed read-only, so host edits are visible on the next launch without letting the sandbox rewrite them. Credentials and mutable runtime data remain writable, persistent, and isolated per instance. Use `--no-agent-config` to suppress new host configuration exposure and credential seeding; it never deletes data already stored in an instance.
 
+In the default `workspace` policy, high-impact project control paths are read-only for every target program: `.bwrap-agent.toml`; Git configuration, hooks, and linked-worktree metadata; OpenCode project configuration, plugins, and tools; and Pi project settings, extensions, and package directories. Missing paths receive neutral read-only placeholders, preventing an agent from creating them. Prompts, skills, themes, commands, agent definitions, `.mcp.json`, and ordinary source files remain writable. This is defense in depth around conventional paths, not a complete executable-content policy.
+
 For OpenCode, `$XDG_CONFIG_HOME/opencode` is mounted read-only while `$XDG_DATA_HOME/opencode`, including a seed-once copy of `auth.json`, remains instance-local. Host `OPENCODE_CONFIG`, `OPENCODE_TUI_CONFIG`, and `OPENCODE_CONFIG_DIR` path overrides are mapped to read-only sandbox paths. Other OpenCode environment settings still require an explicit `--env` or `[env]` entry.
 
 For Pi, the host directory selected by `PI_CODING_AGENT_DIR` (normally `~/.pi/agent`) is presented as a layered view. Configuration and resources are read-only; `auth.json`, `trust.json`, `models-store.json`, and sessions are seed-once or instance-local writable state. Host `~/.agents/skills` is also exposed read-only. Pi's documented terminal overrides are forwarded automatically. Global `/settings`, model-save, and package-management operations may fail because their host-owned targets are read-only; make those changes with host Pi. Project-local Pi changes still follow the selected workspace write policy.
@@ -100,9 +102,11 @@ FROM_HOST = { inherit = true }
 
 Scalar settings are replaced by higher-precedence layers. `instance` is accepted only in the project file, and `--instance` takes precedence over it. `publish`, `ro_bind`, and `rw_bind` arrays are appended; relative bind paths are resolved from the directory containing their config file. Environment entries merge by name. A string is literal, including an empty string, while `{ inherit = true }` deliberately copies the same-named variable from the launcher's host environment. If that variable is absent, it remains unset. The equivalent CLI forms are `--env NAME=value`, `--env NAME=`, and `--env NAME`.
 
-> **Warning:** Project configuration is fully trusted and is evaluated before the sandbox starts. It can request arbitrary host bind mounts, select host networking, and expose sensitive host environment variables. Inspect `.bwrap-agent.toml` in an untrusted checkout or launch with `run --no-project-config`.
+> **Warning:** Project configuration is fully trusted and is evaluated before the sandbox starts. It can request arbitrary host bind mounts, select host networking, and expose sensitive host environment variables. Inspect `.bwrap-agent.toml` in an untrusted checkout or launch with `run --no-project-config`. A project configuration symlink is rejected by default because a writable checkout could retarget it between runs.
 
 `project`, the target command, and action/recovery options are intentionally not accepted in TOML. Use `run --dry-run` to inspect the effective launch plan and the user/project config files that were loaded.
+
+For an exceptional trusted workflow that must edit the built-in control paths, use the CLI-only `run --allow-control-file-writes` escape hatch. It disables the complete built-in control-path policy and prints a warning under `workspace`; it has no additional effect under `state-only`. It also permits loading a symlinked project configuration, so use it only after reviewing the checkout. The escape hatch is deliberately unavailable in TOML.
 
 For inspection or verification without allowing project changes, use the `state-only` write policy:
 
@@ -161,6 +165,8 @@ Do not bind the host Podman socket into this sandbox. Podman's API is deliberate
                            choose isolated (default), shared, or disabled networking
 --publish PORT             publish a private-network port on host loopback
 --dry-run                 print the full launch plan as JSON
+--allow-control-file-writes
+                          disable built-in control-path protection for this run
 --ro-bind PATH            expose one additional host path read-only
 --rw-bind PATH            expose one additional host path read-write
 --env NAME[=VALUE]        set a literal value, or inherit NAME from the host

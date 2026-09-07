@@ -78,6 +78,7 @@ type instanceIdentity struct {
 	State     string
 	Root      string
 	GitCommon string
+	Git       gitMetadata
 	ROBind    []string
 	RWBind    []string
 }
@@ -386,6 +387,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
+	opts.WritePolicy = writePolicy
 	if writePolicy == "state-only" && len(opts.RWBind) > 0 {
 		return LaunchPlan{}, errors.New("--rw-bind is incompatible with --write-policy=state-only")
 	}
@@ -565,6 +567,13 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	for _, source := range identity.RWBind {
 		mounts.mount("--bind", source, source)
 	}
+	controlMounts, protectedPaths, controlCleanup, err := prepareControlFileProtection(opts, identity)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	for _, bind := range controlMounts {
+		mounts.mount(bind.option, bind.source, bind.destination)
+	}
 	for _, bind := range agent.Mounts {
 		mounts.mount("--ro-bind", bind.Source, bind.Destination)
 	}
@@ -621,7 +630,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if storageConfig != "" {
 		launchEnv["CONTAINERS_STORAGE_CONF"] = storageConfig
 	}
-	return LaunchPlan{Instance: instance, Project: project, State: state, WritePolicy: writePolicy, Command: command, Outer: outer, Bwrap: bwrap, Ports: ports, LaunchEnv: launchEnv, TTY: usePTY, ConfigFiles: opts.ConfigFiles}, nil
+	return LaunchPlan{Instance: instance, Project: project, State: state, WritePolicy: writePolicy, Command: command, Outer: outer, Bwrap: bwrap, Ports: ports, LaunchEnv: launchEnv, TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: protectedPaths, ControlCleanup: controlCleanup}, nil
 }
 
 func boolString(value bool) string {

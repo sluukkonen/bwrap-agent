@@ -335,7 +335,7 @@ func resolveAndLockInstance(opts Options) (instanceIdentity, *instanceLock, erro
 	if err != nil {
 		return instanceIdentity{}, nil, err
 	}
-	gitCommon, err := validatedExternalGitCommonDir(project)
+	git, err := validatedGitMetadata(project)
 	if err != nil {
 		return instanceIdentity{}, nil, err
 	}
@@ -347,15 +347,15 @@ func resolveAndLockInstance(opts Options) (instanceIdentity, *instanceLock, erro
 	if err != nil {
 		return instanceIdentity{}, nil, err
 	}
-	return resolveManagedInstanceLocked(project, opts.Instance, gitCommon, roBind, rwBind)
+	return resolveManagedInstanceLocked(project, opts.Instance, git, roBind, rwBind)
 }
 
-func resolveManagedInstanceLocked(project, requested, gitCommon string, roBind, rwBind []string) (instanceIdentity, *instanceLock, error) {
+func resolveManagedInstanceLocked(project, requested string, git gitMetadata, roBind, rwBind []string) (instanceIdentity, *instanceLock, error) {
 	lexicalStore, store, err := managedInstancesPaths()
 	if err != nil {
 		return instanceIdentity{}, nil, err
 	}
-	if err := validateInstanceStorePlacement(lexicalStore, store, project, gitCommon, rwBind); err != nil {
+	if err := validateInstanceStorePlacement(lexicalStore, store, project, git.ExternalCommon, rwBind); err != nil {
 		return instanceIdentity{}, nil, err
 	}
 	if err := secureMkdir(store, 0o700); err != nil {
@@ -403,7 +403,7 @@ func resolveManagedInstanceLocked(project, requested, gitCommon string, roBind, 
 	root := filepath.Join(store, name)
 	identity := instanceIdentity{
 		Project: project, Instance: name, State: filepath.Join(root, "state"), Root: root,
-		GitCommon: gitCommon, ROBind: roBind, RWBind: rwBind,
+		GitCommon: git.ExternalCommon, Git: git, ROBind: roBind, RWBind: rwBind,
 	}
 	lock, err := acquireInstanceLock(identity)
 	if err != nil {

@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/alecthomas/kong"
 )
@@ -23,42 +26,44 @@ func (s *stringList) Decode(ctx *kong.DecodeContext) error {
 
 // Options is the fully merged set of values used to construct a sandbox.
 type Options struct {
-	Project       string
-	Instance      string
-	NoAgentConfig bool
-	Network       string
-	Publish       []string
-	Podman        string
-	WritePolicy   string
-	ROBind        []string
-	RWBind        []string
-	Env           []string
-	UnsetEnv      []string
-	TTY           string
-	DryRun        bool
-	Command       []string
-	ConfigFiles   []ConfigSource
+	Project                string
+	Instance               string
+	NoAgentConfig          bool
+	Network                string
+	Publish                []string
+	Podman                 string
+	WritePolicy            string
+	ROBind                 []string
+	RWBind                 []string
+	Env                    []string
+	UnsetEnv               []string
+	TTY                    string
+	DryRun                 bool
+	AllowControlFileWrites bool
+	Command                []string
+	ConfigFiles            []ConfigSource
 }
 
 // cliOptions contains the run command's options. Pointers let an omitted
 // configurable scalar be distinguished from an explicit command-line override.
 type cliOptions struct {
-	Project         *string    `name:"project" type:"path" placeholder:"PATH" help:"Expose PATH as the project directory; write access follows --write-policy (default: current directory)."`
-	Instance        *string    `name:"instance" placeholder:"NAME" help:"Use this managed instance name, overriding project configuration (default: project directory name)."`
-	AgentConfig     *bool      `name:"agent-config" negatable:"" help:"Expose detected host agent configuration read-only and seed mutable credentials. Default: enabled."`
-	NoConfig        bool       `name:"no-config" help:"Do not load user or project configuration files."`
-	NoProjectConfig bool       `name:"no-project-config" help:"Load user configuration but not the project configuration file."`
-	Network         *string    `name:"network" enum:"private,host,none" placeholder:"private|host|none" help:"Network mode: private (isolated via pasta), host (shared), or none (disabled). Default: private."`
-	Publish         stringList `name:"publish" placeholder:"[HOST_PORT:]GUEST_PORT[/tcp|udp]" help:"Publish a private-network port on host loopback; repeatable. HOST_PORT=0 chooses a free port. Requires --network=private."`
-	Podman          *string    `name:"podman" enum:"auto,on,off" placeholder:"auto|on|off" help:"Podman mode: auto (enable if found), on (require), or off (disable). Enabled modes provide a lazy API socket. Default: auto."`
-	WritePolicy     *string    `name:"write-policy" enum:"workspace,state-only" placeholder:"workspace|state-only" help:"Host write policy: workspace (project, Git metadata, state, and --rw-bind paths) or state-only (instance state only). Default: workspace."`
-	ROBind          stringList `name:"ro-bind" type:"path" placeholder:"PATH" help:"Bind an additional existing host path read-only; repeatable."`
-	RWBind          stringList `name:"rw-bind" type:"path" placeholder:"PATH" help:"Bind an additional existing host path read-write; repeatable. Incompatible with --write-policy=state-only."`
-	Env             stringList `name:"env" placeholder:"NAME[=VALUE]" help:"Set an environment variable, or inherit NAME from the host when VALUE is omitted; repeatable."`
-	UnsetEnv        stringList `name:"unsetenv" placeholder:"NAME" help:"Remove an environment variable from the sandbox; repeatable."`
-	TTY             *string    `name:"tty" enum:"auto,always,never" placeholder:"auto|always|never" help:"Controlling PTY mode: auto (when stdin and stdout are terminals), always, or never. Default: auto."`
-	DryRun          bool       `name:"dry-run" help:"Print the launch plan as JSON instead of starting the sandbox."`
-	Command         []string   `arg:"" name:"program-and-args" passthrough:"partial" help:"Program to execute followed by its arguments."`
+	Project                *string    `name:"project" type:"path" placeholder:"PATH" help:"Expose PATH as the project directory; write access follows --write-policy (default: current directory)."`
+	Instance               *string    `name:"instance" placeholder:"NAME" help:"Use this managed instance name, overriding project configuration (default: project directory name)."`
+	AgentConfig            *bool      `name:"agent-config" negatable:"" help:"Expose detected host agent configuration read-only and seed mutable credentials. Default: enabled."`
+	NoConfig               bool       `name:"no-config" help:"Do not load user or project configuration files."`
+	NoProjectConfig        bool       `name:"no-project-config" help:"Load user configuration but not the project configuration file."`
+	Network                *string    `name:"network" enum:"private,host,none" placeholder:"private|host|none" help:"Network mode: private (isolated via pasta), host (shared), or none (disabled). Default: private."`
+	Publish                stringList `name:"publish" placeholder:"[HOST_PORT:]GUEST_PORT[/tcp|udp]" help:"Publish a private-network port on host loopback; repeatable. HOST_PORT=0 chooses a free port. Requires --network=private."`
+	Podman                 *string    `name:"podman" enum:"auto,on,off" placeholder:"auto|on|off" help:"Podman mode: auto (enable if found), on (require), or off (disable). Enabled modes provide a lazy API socket. Default: auto."`
+	WritePolicy            *string    `name:"write-policy" enum:"workspace,state-only" placeholder:"workspace|state-only" help:"Host write policy: workspace (project, Git metadata, state, and --rw-bind paths) or state-only (instance state only). Default: workspace."`
+	ROBind                 stringList `name:"ro-bind" type:"path" placeholder:"PATH" help:"Bind an additional existing host path read-only; repeatable."`
+	RWBind                 stringList `name:"rw-bind" type:"path" placeholder:"PATH" help:"Bind an additional existing host path read-write; repeatable. Incompatible with --write-policy=state-only."`
+	Env                    stringList `name:"env" placeholder:"NAME[=VALUE]" help:"Set an environment variable, or inherit NAME from the host when VALUE is omitted; repeatable."`
+	UnsetEnv               stringList `name:"unsetenv" placeholder:"NAME" help:"Remove an environment variable from the sandbox; repeatable."`
+	TTY                    *string    `name:"tty" enum:"auto,always,never" placeholder:"auto|always|never" help:"Controlling PTY mode: auto (when stdin and stdout are terminals), always, or never. Default: auto."`
+	DryRun                 bool       `name:"dry-run" help:"Print the launch plan as JSON instead of starting the sandbox."`
+	AllowControlFileWrites bool       `name:"allow-control-file-writes" help:"Disable built-in read-only protection for Git and agent control paths for this run."`
+	Command                []string   `arg:"" name:"program-and-args" passthrough:"partial" help:"Program to execute followed by its arguments."`
 }
 
 type configOptions struct {
@@ -172,6 +177,18 @@ func mergeCLIOptions(cli cliOptions, stderr io.Writer) (Options, int, error) {
 		fmt.Fprintf(stderr, "bwrap-agent: %v\n", err)
 		return Options{}, 2, err
 	}
+	if !cli.AllowControlFileWrites && !cli.NoConfig && !cli.NoProjectConfig {
+		configPath := filepath.Join(project, projectConfigName)
+		if info, inspectErr := os.Lstat(configPath); inspectErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			err = fmt.Errorf("project configuration %s is a symlink; refusing to trust a retargetable control file (use --allow-control-file-writes to bypass this protection)", configPath)
+			fmt.Fprintf(stderr, "bwrap-agent: %v\n", err)
+			return Options{}, 2, err
+		} else if inspectErr != nil && !errors.Is(inspectErr, os.ErrNotExist) {
+			err = fmt.Errorf("inspect project configuration %s: %w", configPath, inspectErr)
+			fmt.Fprintf(stderr, "bwrap-agent: %v\n", err)
+			return Options{}, 2, err
+		}
+	}
 	layers, sources, err := loadConfiguration(project, cli.NoConfig, cli.NoProjectConfig)
 	if err != nil {
 		fmt.Fprintf(stderr, "bwrap-agent: %v\n", err)
@@ -256,10 +273,33 @@ func Main(args []string) int {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: update instance metadata: %v\n", err)
 		return 2
 	}
+	var launchSignals chan os.Signal
+	var control *launchControlFiles
+	writePolicy, policyErr := resolveWritePolicy(opts.WritePolicy)
+	if policyErr != nil {
+		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", policyErr)
+		return 2
+	}
+	if !opts.DryRun {
+		launchSignals = make(chan os.Signal, 8)
+		signal.Notify(launchSignals, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
+		defer signal.Stop(launchSignals)
+		if writePolicy == "workspace" && !opts.AllowControlFileWrites {
+			control, err = newLaunchControlFiles(identity.Project)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "bwrap-agent: prepare control-path coordination: %v\n", err)
+				return 126
+			}
+		}
+	}
 	plan, err := buildPlan(opts, identity)
 	if err != nil {
+		_ = control.Close()
 		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
 		return 2
+	}
+	if opts.AllowControlFileWrites && plan.WritePolicy == "workspace" {
+		fmt.Fprintln(os.Stderr, "bwrap-agent: warning: built-in control-file write protection is disabled for this run")
 	}
 	if opts.DryRun {
 		if err := writePlanJSON(os.Stdout, plan); err != nil {
@@ -268,11 +308,35 @@ func Main(args []string) int {
 		}
 		return 0
 	}
+	if control != nil {
+		if err := control.prepare(plan.ControlCleanup); err != nil {
+			_ = control.Close()
+			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare control-path protection: %v\n", err)
+			return 126
+		}
+	}
+	select {
+	case received := <-launchSignals:
+		_ = control.Close()
+		if sig, ok := received.(syscall.Signal); ok {
+			return 128 + int(sig)
+		}
+		return 126
+	default:
+	}
 	for _, port := range plan.Ports {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: %s 127.0.0.1:%d -> sandbox 127.0.0.1:%d\n", port.Protocol, port.Host, port.Guest)
 	}
+	status := 0
 	if plan.TTY {
-		return runWithPTY(plan.Argv(), plan.LaunchEnv, os.Stdin, os.Stdout)
+		signal.Notify(launchSignals, syscall.SIGWINCH)
+		status = runWithPTYSignals(plan.Argv(), plan.LaunchEnv, os.Stdin, os.Stdout, launchSignals)
+	} else {
+		status = runDirectSignals(plan.Argv(), plan.LaunchEnv, os.Stdin, os.Stdout, os.Stderr, launchSignals)
 	}
-	return runDirect(plan.Argv(), plan.LaunchEnv, os.Stdin, os.Stdout, os.Stderr)
+	if err := control.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "bwrap-agent: clean up control-path placeholders: %v\n", err)
+		return 126
+	}
+	return status
 }
