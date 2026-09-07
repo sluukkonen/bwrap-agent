@@ -11,6 +11,7 @@ import (
 )
 
 type fileConfig struct {
+	Instance    *string        `toml:"instance"`
 	AgentConfig *bool          `toml:"agent_config"`
 	Network     *string        `toml:"network"`
 	Publish     []string       `toml:"publish"`
@@ -37,6 +38,7 @@ type envDirective struct {
 }
 
 type optionLayer struct {
+	instance    *string
 	agentConfig *bool
 	network     *string
 	publish     []string
@@ -76,6 +78,9 @@ func loadConfiguration(project string, noConfig, noProjectConfig bool) ([]option
 			return nil, nil, fmt.Errorf("configuration %s: %w", source.Path, err)
 		}
 		if found {
+			if source.Scope == "user" && layer.instance != nil {
+				return nil, nil, fmt.Errorf("configuration %s: instance is only valid in project configuration", source.Path)
+			}
 			layers = append(layers, layer)
 			sources = append(sources, source)
 		}
@@ -112,6 +117,11 @@ func loadConfigFile(path string) (optionLayer, bool, error) {
 }
 
 func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, error) {
+	if config.Instance != nil {
+		if _, err := safeName(*config.Instance); err != nil {
+			return optionLayer{}, fmt.Errorf("instance: %w", err)
+		}
+	}
 	if err := validateChoice("network", config.Network, "private", "host", "none"); err != nil {
 		return optionLayer{}, err
 	}
@@ -150,6 +160,7 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 		environment[name] = envDirective{kind: envUnset}
 	}
 	return optionLayer{
+		instance:    config.Instance,
 		agentConfig: config.AgentConfig,
 		network:     config.Network,
 		publish:     config.Publish,
@@ -293,12 +304,12 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		Command:     append([]string(nil), cli.Command...),
 		ConfigFiles: append([]ConfigSource(nil), sources...),
 	}
-	if cli.Instance != nil {
-		opts.Instance = *cli.Instance
-	}
 	agentConfig := true
 	environment := map[string]envDirective{}
 	apply := func(layer optionLayer) {
+		if layer.instance != nil {
+			opts.Instance = *layer.instance
+		}
 		if layer.agentConfig != nil {
 			agentConfig = *layer.agentConfig
 		}
@@ -329,6 +340,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		return Options{}, err
 	}
 	apply(optionLayer{
+		instance:    cli.Instance,
 		agentConfig: cli.AgentConfig,
 		network:     cli.Network,
 		publish:     cli.Publish,

@@ -20,6 +20,11 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # then run-command options. Uncomment only the settings you want to override.
 # Every setting below is commented out, so this file is behavior-neutral as-is.
 
+# Persistent instance name for this project. The command-line --instance option
+# takes precedence. This setting is not valid in the user configuration.
+# Default: a name derived from the project directory.
+# instance = "my-project"
+
 # Seed configuration for a detected agent into its instance state.
 # Default: true.
 # agent_config = true
@@ -62,8 +67,8 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # EMPTY = ""
 # FROM_HOST = { inherit = true }
 
-# Invocation controls such as project selection, instance naming, dry-run
-# mode, and the target command are run-command options only.
+# Project selection, dry-run mode, and the target command are run-command
+# options only.
 `
 
 func createProjectConfig(directory string) error {

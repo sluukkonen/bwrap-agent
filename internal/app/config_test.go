@@ -33,6 +33,7 @@ USER_ONLY = "user"
 MISSING_FALLBACK = "lower"
 `)
 	writeTestFile(t, filepath.Join(project, ".bwrap-agent.toml"), `
+instance = "project-instance"
 agent_config = false
 network = "private"
 tty = "never"
@@ -58,6 +59,7 @@ PRESENT = { inherit = true }
 		"run",
 		"--project", project,
 		"--network", "none",
+		"--instance", "cli-instance",
 		"--agent-config",
 		"--publish", "11003:3",
 		"--ro-bind", "cli-relative",
@@ -69,7 +71,7 @@ PRESENT = { inherit = true }
 	if err != nil || code != 0 {
 		t.Fatalf("parseOptions failed: code=%d err=%v stderr=%q", code, err, stderr.String())
 	}
-	if opts.Network != "none" || opts.Podman != "off" || opts.TTY != "never" || opts.NoAgentConfig {
+	if opts.Instance != "cli-instance" || opts.Network != "none" || opts.Podman != "off" || opts.TTY != "never" || opts.NoAgentConfig {
 		t.Fatalf("unexpected merged scalars: %#v", opts)
 	}
 	if want := []string{"11001:1", "11002:2", "11003:3"}; !reflect.DeepEqual(opts.Publish, want) {
@@ -105,6 +107,84 @@ PRESENT = { inherit = true }
 	}
 }
 
+func TestInstanceIsProjectConfigurable(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(project, projectConfigName), `instance = "configured-instance"`)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "empty-config"))
+
+	parse := func(extra ...string) Options {
+		args := append([]string{"run", "--project", project}, extra...)
+		args = append(args, "/bin/true")
+		opts, code, err := parseOptions(args, &bytes.Buffer{}, &bytes.Buffer{})
+		if err != nil || code != 0 {
+			t.Fatalf("parseOptions(%q) failed: code=%d err=%v", args, code, err)
+		}
+		return opts
+	}
+
+	if got := parse().Instance; got != "configured-instance" {
+		t.Fatalf("project-configured instance = %q", got)
+	}
+	if got := parse("--instance", "cli-instance").Instance; got != "cli-instance" {
+		t.Fatalf("CLI instance override = %q", got)
+	}
+	if got := parse("--no-project-config").Instance; got != "" {
+		t.Fatalf("instance with project config disabled = %q, want default selection", got)
+	}
+}
+
+func TestInstanceIsRejectedInUserConfiguration(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	userDirectory := filepath.Join(root, "config", "bwrap-agent")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(userDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(userDirectory, "config.toml"), `instance = "global-instance"`)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+
+	var stderr bytes.Buffer
+	_, code, err := parseOptions([]string{"run", "--project", project, "/bin/true"}, &bytes.Buffer{}, &stderr)
+	if err == nil || code != 2 || !strings.Contains(err.Error(), "only valid in project configuration") {
+		t.Fatalf("user instance setting result: code=%d err=%v stderr=%q", code, err, stderr.String())
+	}
+}
+
+func TestProjectConfiguredInstanceRetainsProjectOwnership(t *testing.T) {
+	root := t.TempDir()
+	projectA := filepath.Join(root, "project-a")
+	projectB := filepath.Join(root, "project-b")
+	for _, project := range []string{projectA, projectB} {
+		if err := os.MkdirAll(project, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(project, projectConfigName), `instance = "shared-name"`)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "empty-config"))
+	t.Setenv("BWRAP_AGENT_STATE_HOME", filepath.Join(root, "state-home"))
+
+	parse := func(project string) Options {
+		opts, code, err := parseOptions([]string{"run", "--project", project, "/bin/true"}, &bytes.Buffer{}, &bytes.Buffer{})
+		if err != nil || code != 0 {
+			t.Fatalf("parse project %s: code=%d err=%v", project, code, err)
+		}
+		return opts
+	}
+	if _, err := resolveTestInstance(t, parse(projectA)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveTestInstance(t, parse(projectB)); err == nil || !strings.Contains(err.Error(), "belongs to project") {
+		t.Fatalf("second project reused configured instance: %v", err)
+	}
+}
+
 func mustWorkingDirectory(t *testing.T) string {
 	t.Helper()
 	directory, err := os.Getwd()
@@ -123,6 +203,8 @@ func TestConfigurationIsStrict(t *testing.T) {
 		{"invocation key", `project = "/tmp"`},
 		{"wrong scalar type", `network = true`},
 		{"invalid choice", `tty = "sometimes"`},
+		{"invalid instance", `instance = "has spaces"`},
+		{"reserved instance", `instance = ".deleting-private"`},
 		{"invalid env type", "[env]\nFOO = true"},
 		{"false inheritance", "[env]\nFOO = { inherit = false }"},
 		{"inheritance option", "[env]\nFOO = { inherit = true, required = true }"},

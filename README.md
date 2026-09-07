@@ -30,7 +30,7 @@ The `run` command requires a program; there is no implicit default agent. The la
 
 By default, the instance uses a readable name derived from the project directory (for example, `bwrap-agent`). Returning to the same canonical project reuses its sandbox home, agent credentials, dependency caches, images, containers, and volumes. If that readable name already belongs to another project, a short hash of the canonical path is appended. Different worktree directory names therefore normally receive distinct instances automatically.
 
-Use `--instance` to select a different persistent instance explicitly. An explicit name is permanently associated with one canonical project:
+Set `instance = "feature-payments"` in the project configuration to persist a different name, or use `--instance` for a command-line override. Instance names are project-only configuration: a fixed name in the user-wide file would collide across projects. An explicit or configured name is permanently associated with one canonical project:
 
 ```console
 $ ./bin/bwrap-agent run --instance feature-payments --project ../feature-payments opencode
@@ -74,6 +74,7 @@ The command refuses to replace an existing file. It does not load configuration 
 Missing files are ignored. Existing files are parsed strictly: unknown keys, invalid values, and wrong types stop the launch instead of being silently ignored. `--no-project-config` skips the project file, while `--no-config` skips both files. `--help` remains available even when a config file is broken.
 
 ```toml
+instance = "my-project" # project configuration only
 agent_config = true
 network = "private"
 podman = "auto"
@@ -91,11 +92,11 @@ EMPTY = ""
 FROM_HOST = { inherit = true }
 ```
 
-Scalar settings are replaced by higher-precedence layers. `publish`, `ro_bind`, and `rw_bind` arrays are appended; relative bind paths are resolved from the directory containing their config file. Environment entries merge by name. A string is literal, including an empty string, while `{ inherit = true }` deliberately copies the same-named variable from the launcher's host environment. If that variable is absent, it remains unset. The equivalent CLI forms are `--env NAME=value`, `--env NAME=`, and `--env NAME`.
+Scalar settings are replaced by higher-precedence layers. `instance` is accepted only in the project file, and `--instance` takes precedence over it. `publish`, `ro_bind`, and `rw_bind` arrays are appended; relative bind paths are resolved from the directory containing their config file. Environment entries merge by name. A string is literal, including an empty string, while `{ inherit = true }` deliberately copies the same-named variable from the launcher's host environment. If that variable is absent, it remains unset. The equivalent CLI forms are `--env NAME=value`, `--env NAME=`, and `--env NAME`.
 
 > **Warning:** Project configuration is fully trusted and is evaluated before the sandbox starts. It can request arbitrary host bind mounts, select host networking, and expose sensitive host environment variables. Inspect `.bwrap-agent.toml` in an untrusted checkout or launch with `run --no-project-config`.
 
-`project`, `instance`, the target command, and action/recovery options are intentionally not accepted in TOML. Use `run --dry-run` to inspect the effective launch plan and the user/project config files that were loaded.
+`project`, the target command, and action/recovery options are intentionally not accepted in TOML. Use `run --dry-run` to inspect the effective launch plan and the user/project config files that were loaded.
 
 For inspection or verification without allowing project changes, use the `state-only` write policy:
 
