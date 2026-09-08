@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 var terminalEnvironment = map[string]bool{
@@ -262,14 +264,24 @@ func resolvePodman(mode string) (string, error) {
 	}
 }
 
-func resolveWritePolicy(policy string) (string, error) {
-	if policy == "" {
-		policy = "workspace"
+func resolveWorkspaceMode(mode string) (string, error) {
+	if mode == "" {
+		mode = "write-through"
 	}
-	if policy != "workspace" && policy != "state-only" {
-		return "", fmt.Errorf("invalid write policy %q: expected workspace or state-only", policy)
+	if mode != "write-through" && mode != "copy-on-write" && mode != "read-only" {
+		return "", fmt.Errorf("invalid workspace mode %q: expected write-through, copy-on-write, or read-only", mode)
 	}
-	return policy, nil
+	return mode, nil
+}
+
+func resolveLandlockMode(mode string) (string, error) {
+	if mode == "" {
+		mode = "auto"
+	}
+	if mode != "auto" && mode != "required" && mode != "off" {
+		return "", fmt.Errorf("invalid Landlock mode %q: expected auto, required, or off", mode)
+	}
+	return mode, nil
 }
 
 func terminalEnv(source []string) map[string]string {
@@ -314,13 +326,24 @@ func writeStorageConfig(state string) (string, error) {
 	return writeStateFile(state, "config/containers/storage.conf", []byte(content), 0o600)
 }
 
-func writeContainersConfig(state string, privateNetwork bool) (string, error) {
+func writeContainersConfig(state string, privateNetwork, disableLabeling bool) (string, error) {
+	containerConfig := ""
+	if disableLabeling {
+		// A Bubblewrap tmp-overlay has a private mount label that nested SELinux
+		// containers cannot relabel. The outer sandbox remains confined, while
+		// the disposable workspace supplies the container write boundary.
+		containerConfig = "[containers]\nlabel = false\n\n"
+	}
 	if !privateNetwork {
-		content := []byte("[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"file\"\n")
+		content := []byte(containerConfig + "[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"file\"\n")
 		return writeStateFile(state, "config/containers/containers.conf", content, 0o600)
 	}
 	containerProxy := fmt.Sprintf("http://%s:%d", proxyContainerHostname, proxyContainerPort)
-	content := []byte(fmt.Sprintf("[containers]\nbase_hosts_file = \"none\"\nhttp_proxy = false\nenv = [\"HTTP_PROXY=%s\", \"HTTPS_PROXY=%s\", \"http_proxy=%s\", \"https_proxy=%s\", \"NO_PROXY=localhost,127.0.0.1,::1\", \"no_proxy=localhost,127.0.0.1,::1\"]\n\n[network]\npasta_options = [\"--map-host-loopback\", \"%s\"]\n\n[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"file\"\n", containerProxy, containerProxy, containerProxy, containerProxy, proxyContainerAddress))
+	labelSetting := ""
+	if disableLabeling {
+		labelSetting = "label = false\n"
+	}
+	content := []byte(fmt.Sprintf("[containers]\n%sbase_hosts_file = \"none\"\nhttp_proxy = false\nenv = [\"HTTP_PROXY=%s\", \"HTTPS_PROXY=%s\", \"http_proxy=%s\", \"https_proxy=%s\", \"NO_PROXY=localhost,127.0.0.1,::1\", \"no_proxy=localhost,127.0.0.1,::1\"]\n\n[network]\npasta_options = [\"--map-host-loopback\", \"%s\"]\n\n[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"file\"\n", labelSetting, containerProxy, containerProxy, containerProxy, containerProxy, proxyContainerAddress))
 	return writeStateFile(state, "config/containers/containers.conf", content, 0o600)
 }
 
@@ -356,12 +379,88 @@ func resolveCommand(context agentContext, requested []string, adapter *agentAdap
 		return adapter.resolveExternalCommand(context, requested, resolved)
 	}
 	command := append([]string{"/run/bwrap-agent/command"}, requested[1:]...)
-	return command, agentSetup{Mounts: []agentMount{{resolved, "/run/bwrap-agent/command"}}}, nil
+	return command, agentSetup{Mounts: []agentMount{{Source: resolved, Destination: "/run/bwrap-agent/command", Executable: true}}}, nil
 }
 
 type mountBuilder struct {
 	args []string
+	dirs []string
+	ops  []string
 	made map[string]bool
+}
+
+func openSandboxInit(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("injected executable is not a regular file: %s", path)
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+func launchBubblewrap(argv []string) int {
+	separator := -1
+	for index, argument := range argv {
+		if argument == "--" {
+			separator = index
+			break
+		}
+	}
+	if separator < 0 || separator+1 >= len(argv) {
+		fmt.Fprintln(os.Stderr, "bwrap-agent: internal Bubblewrap launcher received no command")
+		return 126
+	}
+	sources, command := argv[:separator], argv[separator+1:]
+	self, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bwrap-agent: locate sandbox init: %v\n", err)
+		return 126
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bwrap-agent: resolve sandbox init: %v\n", err)
+		return 126
+	}
+	paths := append([]string{self}, sources...)
+	files := make([]*os.File, 0, len(paths))
+	for _, path := range paths {
+		file, err := openSandboxInit(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: open injected executable %s: %v\n", path, err)
+			return 126
+		}
+		files = append(files, file)
+	}
+	defer func() {
+		for _, file := range files {
+			_ = file.Close()
+		}
+	}()
+	for index, file := range files {
+		sourceFD, targetFD := int(file.Fd()), 3+index
+		if sourceFD == targetFD {
+			if _, err := unix.FcntlInt(uintptr(sourceFD), unix.F_SETFD, 0); err != nil {
+				fmt.Fprintf(os.Stderr, "bwrap-agent: preserve executable descriptor: %v\n", err)
+				return 126
+			}
+		} else if err := unix.Dup3(sourceFD, targetFD, 0); err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare executable descriptor: %v\n", err)
+			return 126
+		}
+	}
+	if err := unix.Exec(command[0], command, os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "bwrap-agent: launch Bubblewrap: %v\n", err)
+		return launchErrorCode(err)
+	}
+	return 0
 }
 
 func (m *mountBuilder) parentDirs(path string) {
@@ -371,7 +470,7 @@ func (m *mountBuilder) parentDirs(path string) {
 	}
 	for index := len(parents) - 1; index >= 0; index-- {
 		if !m.made[parents[index]] {
-			m.args = append(m.args, "--dir", parents[index])
+			m.dirs = append(m.dirs, "--dir", parents[index])
 			m.made[parents[index]] = true
 		}
 	}
@@ -379,7 +478,61 @@ func (m *mountBuilder) parentDirs(path string) {
 
 func (m *mountBuilder) mount(option, source, destination string) {
 	m.parentDirs(destination)
-	m.args = append(m.args, option, source, destination)
+	m.ops = append(m.ops, option, source, destination)
+}
+
+func (m *mountBuilder) operation(arguments ...string) {
+	m.ops = append(m.ops, arguments...)
+}
+
+func (m *mountBuilder) finish() []string {
+	result := append([]string(nil), m.args...)
+	result = append(result, m.dirs...)
+	return append(result, m.ops...)
+}
+
+// mountExternalEtcLinkTarget preserves the named destination of a resolver or
+// hosts-file symlink. Bubblewrap gives paths such as /run and /var private
+// filesystems, so their host-side symlink chains are not otherwise available.
+func mountExternalEtcLinkTarget(mounts *mountBuilder, path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+	linkTarget, err := os.Readlink(path)
+	if err != nil {
+		return fmt.Errorf("read %s symlink: %w", path, err)
+	}
+	namedTarget := linkTarget
+	if !filepath.IsAbs(namedTarget) {
+		namedTarget = filepath.Join(filepath.Dir(path), namedTarget)
+	}
+	namedTarget = filepath.Clean(namedTarget)
+	target, err := filepath.EvalSymlinks(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", path, err)
+	}
+	targetInfo, err := os.Stat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat resolved %s: %w", path, err)
+	}
+	if !targetInfo.Mode().IsRegular() {
+		return fmt.Errorf("resolved %s is not a regular file: %s", path, target)
+	}
+	mounts.mount("--ro-bind", target, namedTarget)
+	return nil
 }
 
 func BuildPlan(opts Options) (LaunchPlan, error) {
@@ -393,20 +546,22 @@ func BuildPlan(opts Options) (LaunchPlan, error) {
 
 func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	project, instance, state := identity.Project, identity.Instance, identity.State
-	writePolicy, err := resolveWritePolicy(opts.WritePolicy)
+	workspaceMode, err := resolveWorkspaceMode(opts.WorkspaceMode)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	opts.WritePolicy = writePolicy
+	opts.WorkspaceMode = workspaceMode
+	landlockMode, err := resolveLandlockMode(opts.Landlock)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	opts.Landlock = landlockMode
 	opts.NetworkAllow, err = normalizeNetworkAllowList(opts.NetworkAllow)
 	if err != nil {
 		return LaunchPlan{}, fmt.Errorf("network allowlist: %w", err)
 	}
 	if opts.Network == "host" && len(opts.NetworkAllow) > 0 {
 		return LaunchPlan{}, errors.New("--network-allow cannot be used with --network=host")
-	}
-	if writePolicy == "state-only" && len(opts.RWBind) > 0 {
-		return LaunchPlan{}, errors.New("--rw-bind is incompatible with --write-policy=state-only")
 	}
 	if err := secureMkdir(state, 0o700); err != nil {
 		return LaunchPlan{}, err
@@ -420,6 +575,21 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
+	bwrapInfo, err := inspectBubblewrap(bwrapBin)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	if workspaceMode == "read-only" || landlockMode == "required" {
+		if opts.Podman == "on" {
+			if workspaceMode == "read-only" {
+				return LaunchPlan{}, errors.New("--podman=on is incompatible with --workspace-mode=read-only")
+			}
+			return LaunchPlan{}, errors.New("--podman=on is incompatible with --landlock=required")
+		}
+		if opts.Podman == "" || opts.Podman == "auto" {
+			opts.Podman = "off"
+		}
+	}
 	podmanBin, err := resolvePodman(opts.Podman)
 	if err != nil {
 		return LaunchPlan{}, err
@@ -430,9 +600,13 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		if err != nil {
 			return LaunchPlan{}, err
 		}
-		if _, err := writeContainersConfig(state, opts.Network == "private"); err != nil {
+		if _, err := writeContainersConfig(state, opts.Network == "private", workspaceMode == "copy-on-write"); err != nil {
 			return LaunchPlan{}, err
 		}
+	}
+	landlockStatus, err := determineLandlockStatus(landlockMode, podmanBin != "", queryLandlockABI)
+	if err != nil {
+		return LaunchPlan{}, err
 	}
 	var pastaBin string
 	if opts.Network == "private" {
@@ -474,7 +648,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		"XDG_CONFIG_HOME": filepath.Join(state, "config"), "XDG_CACHE_HOME": filepath.Join(state, "home", ".cache"),
 		"XDG_DATA_HOME": filepath.Join(state, "data"), "XDG_STATE_HOME": filepath.Join(state, "home", ".local", "state"),
 		"XDG_RUNTIME_DIR": "/run/bwrap-agent/runtime", "TMPDIR": filepath.Join(state, "tmp"),
-		"BWRAP_AGENT_INSTANCE": instance, "BWRAP_AGENT_PODMAN": boolString(podmanBin != ""),
+		"BWRAP_AGENT_INSTANCE": instance,
 	}
 	if opts.Network == "private" {
 		proxyURL := fmt.Sprintf("http://127.0.0.1:%d", proxyGuestPort)
@@ -482,7 +656,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		environment["HTTPS_PROXY"], environment["https_proxy"] = proxyURL, proxyURL
 		environment["NO_PROXY"], environment["no_proxy"] = "localhost,127.0.0.1,::1", "localhost,127.0.0.1,::1"
 	}
-	if writePolicy == "state-only" {
+	if workspaceMode == "read-only" {
 		environment["GIT_OPTIONAL_LOCKS"] = "0"
 	}
 	for name, value := range terminalEnv(os.Environ()) {
@@ -512,8 +686,40 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		}
 		delete(environment, name)
 	}
+	// This launcher-owned status value must reflect the resolved plan. Runtime
+	// security and cleanup use an internal command mode rather than trusting it.
+	environment["BWRAP_AGENT_PODMAN"] = boolString(podmanBin != "")
+	// Never accept a policy payload from configuration or the host environment.
+	// Enabled Landlock replaces it below with a launcher-generated allowlist;
+	// otherwise the sandbox runtime must not see this internal control value.
+	delete(environment, internalLandlockEnvironment)
+	if landlockStatus.Effective == "enabled" {
+		hostWritePaths := []string{state}
+		hostWritePaths = append(hostWritePaths, identity.RWBind...)
+		if workspaceMode != "read-only" {
+			hostWritePaths = append(hostWritePaths, project)
+			if identity.GitCommon != "" {
+				hostWritePaths = append(hostWritePaths, identity.GitCommon)
+			}
+		}
+		// Bubblewrap creates these paths in the sandbox independently of whether
+		// matching paths exist on the host. They are present by the time the
+		// sandbox runtime applies Landlock.
+		writePaths, err := prepareLandlockWritePaths(hostWritePaths, []string{"/tmp", "/var/tmp", "/run", "/dev"})
+		if err != nil {
+			return LaunchPlan{}, fmt.Errorf("prepare Landlock write paths: %w", err)
+		}
+		encoded, err := json.Marshal(writePaths)
+		if err != nil {
+			return LaunchPlan{}, err
+		}
+		environment[internalLandlockEnvironment] = string(encoded)
+	}
 
 	bwrap := []string{bwrapBin, "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup-try", "--die-with-parent"}
+	if podmanBin == "" {
+		bwrap = append(bwrap, "--unshare-user", "--disable-userns")
+	}
 	if !usePTY {
 		bwrap = append(bwrap, "--new-session")
 	}
@@ -526,7 +732,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		mounts.mount("--ro-bind", "/usr", "/usr")
 	}
 	if opts.Network == "private" {
-		mounts.args = append(mounts.args, "--dir", "/etc")
+		mounts.operation("--dir", "/etc")
 		mounts.made["/etc"] = true
 		entries, err := os.ReadDir("/etc")
 		if err != nil {
@@ -542,7 +748,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 				if err != nil {
 					return LaunchPlan{}, err
 				}
-				mounts.args = append(mounts.args, "--symlink", target, source)
+				mounts.operation("--symlink", target, source)
 			} else {
 				mounts.mount("--ro-bind", source, source)
 			}
@@ -559,6 +765,11 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		mounts.mount("--ro-bind", hosts, "/etc/hosts")
 	} else if _, err := os.Stat("/etc"); err == nil {
 		mounts.mount("--ro-bind", "/etc", "/etc")
+		for _, path := range []string{"/etc/resolv.conf", "/etc/hosts"} {
+			if err := mountExternalEtcLinkTarget(&mounts, path); err != nil {
+				return LaunchPlan{}, err
+			}
+		}
 	}
 	for _, legacy := range []string{"/bin", "/sbin", "/lib", "/lib64"} {
 		info, err := os.Lstat(legacy)
@@ -570,23 +781,50 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 			if err != nil {
 				return LaunchPlan{}, err
 			}
-			mounts.args = append(mounts.args, "--symlink", target, legacy)
+			mounts.operation("--symlink", target, legacy)
 		} else {
 			mounts.mount("--ro-bind", legacy, legacy)
 		}
 	}
-	for _, optional := range []string{"/sys", "/opt", "/nix/store"} {
+	if _, err := os.Stat("/sys"); err == nil {
+		option := "--ro-bind"
+		if podmanBin != "" {
+			// Privileged rootless containers expect to reuse the outer user
+			// namespace's sysfs mount. The agent runs in a less-privileged child
+			// user namespace and cannot exercise the outer namespace's sysfs
+			// capabilities even though this bind remains writable.
+			option = "--bind"
+		}
+		mounts.mount(option, "/sys", "/sys")
+	}
+	for _, optional := range []string{"/opt", "/nix/store"} {
 		if _, err := os.Stat(optional); err == nil {
 			mounts.mount("--ro-bind", optional, optional)
 		}
 	}
-	workspaceMount := "--bind"
-	if writePolicy == "state-only" {
-		workspaceMount = "--ro-bind"
-	}
-	mounts.mount(workspaceMount, project, project)
-	if identity.GitCommon != "" {
-		mounts.mount(workspaceMount, identity.GitCommon, identity.GitCommon)
+	switch workspaceMode {
+	case "write-through":
+		mounts.mount("--bind", project, project)
+		if identity.GitCommon != "" {
+			mounts.mount("--bind", identity.GitCommon, identity.GitCommon)
+		}
+	case "copy-on-write":
+		for _, source := range identity.ROBind {
+			if pathsOverlap(source, project) || identity.GitCommon != "" && pathsOverlap(source, identity.GitCommon) {
+				return LaunchPlan{}, fmt.Errorf("read-only bind %s overlaps a copy-on-write workspace hierarchy", source)
+			}
+		}
+		mounts.parentDirs(project)
+		mounts.operation("--overlay-src", project, "--tmp-overlay", project)
+		if identity.GitCommon != "" {
+			mounts.parentDirs(identity.GitCommon)
+			mounts.operation("--overlay-src", identity.GitCommon, "--tmp-overlay", identity.GitCommon)
+		}
+	case "read-only":
+		mounts.mount("--ro-bind", project, project)
+		if identity.GitCommon != "" {
+			mounts.mount("--ro-bind", identity.GitCommon, identity.GitCommon)
+		}
 	}
 	mounts.mount("--bind", state, state)
 	for _, source := range identity.ROBind {
@@ -613,8 +851,23 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	mounts.mount("--ro-bind", self, "/run/bwrap-agent/init")
+	mounts.parentDirs("/run/bwrap-agent/init")
+	mounts.operation("--perms", "0555", "--ro-bind-data", "3", "/run/bwrap-agent/init")
+	var executableSources []string
 	for _, bind := range commandSetup.Mounts {
+		if bind.Executable && podmanBin != "" {
+			info, err := os.Stat(bind.Source)
+			if err != nil {
+				return LaunchPlan{}, err
+			}
+			if info.Mode().IsRegular() {
+				fd := 4 + len(executableSources)
+				executableSources = append(executableSources, bind.Source)
+				mounts.parentDirs(bind.Destination)
+				mounts.operation("--perms", "0555", "--ro-bind-data", strconv.Itoa(fd), bind.Destination)
+				continue
+			}
+		}
 		mounts.mount("--ro-bind", bind.Source, bind.Destination)
 	}
 	names := make([]string, 0, len(environment))
@@ -622,12 +875,16 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	bwrap = mounts.finish()
 	for _, name := range names {
-		mounts.args = append(mounts.args, "--setenv", name, environment[name])
+		bwrap = append(bwrap, "--setenv", name, environment[name])
 	}
-	mounts.args = append(mounts.args, "--hostname", "agent-"+truncate(instance, 48), "--chdir", project, "/run/bwrap-agent/init", internalInitMode)
-	mounts.args = append(mounts.args, command...)
-	bwrap = mounts.args
+	initMode := internalInitMode
+	if podmanBin != "" {
+		initMode = internalPodmanInitMode
+	}
+	bwrap = append(bwrap, "--hostname", "agent-"+truncate(instance, 48), "--chdir", project, "/run/bwrap-agent/init", initMode)
+	bwrap = append(bwrap, command...)
 	if opts.Network == "none" {
 		bwrap = append([]string{bwrap[0], "--unshare-net"}, bwrap[1:]...)
 	}
@@ -662,7 +919,14 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if opts.Network == "private" {
 		proxyPort = proxyGuestPort
 	}
-	return LaunchPlan{Instance: instance, Project: project, State: state, WritePolicy: writePolicy, NetworkAllow: append([]string{}, opts.NetworkAllow...), ProxyGuestPort: proxyPort, Command: command, Outer: outer, Bwrap: bwrap, Ports: ports, LaunchEnv: launchEnv, TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: protectedPaths, ControlCleanup: controlCleanup}, nil
+	return LaunchPlan{Instance: instance, Project: project, State: state, WorkspaceMode: workspaceMode,
+		Landlock: landlockStatus, Bubblewrap: bwrapInfo.BubblewrapStatus,
+		NetworkAllow: append([]string{}, opts.NetworkAllow...), ProxyGuestPort: proxyPort,
+		Command: command, Outer: outer,
+		Launcher: append(append([]string{self, internalLaunchMode}, executableSources...), "--"),
+		Bwrap:    bwrap, Ports: ports, LaunchEnv: launchEnv,
+		TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: protectedPaths,
+		ControlCleanup: controlCleanup}, nil
 }
 
 func boolString(value bool) string {

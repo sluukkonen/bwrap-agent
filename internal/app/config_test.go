@@ -23,6 +23,8 @@ func TestConfigurationPrecedenceAndEnvironment(t *testing.T) {
 	writeTestFile(t, filepath.Join(userDirectory, "config.toml"), `
 network = "host"
 podman = "off"
+workspace_mode = "copy-on-write"
+landlock = "off"
 network_allow = ["https://user.example", "https://duplicate.example"]
 publish = ["11001:1"]
 ro_bind = ["user-relative"]
@@ -38,6 +40,8 @@ instance = "project-instance"
 agent_config = false
 network = "private"
 tty = "never"
+workspace_mode = "read-only"
+landlock = "auto"
 network_allow = ["https://project.example", "https://duplicate.example:443"]
 publish = ["11002:2"]
 ro_bind = ["project-relative"]
@@ -63,6 +67,8 @@ PRESENT = { inherit = true }
 		"--network", "none",
 		"--network-allow", "https://cli.example",
 		"--instance", "cli-instance",
+		"--workspace-mode", "write-through",
+		"--landlock", "required",
 		"--agent-config",
 		"--publish", "11003:3",
 		"--ro-bind", "cli-relative",
@@ -74,7 +80,7 @@ PRESENT = { inherit = true }
 	if err != nil || code != 0 {
 		t.Fatalf("parseOptions failed: code=%d err=%v stderr=%q", code, err, stderr.String())
 	}
-	if opts.Instance != "cli-instance" || opts.Network != "none" || opts.Podman != "off" || opts.TTY != "never" || opts.NoAgentConfig {
+	if opts.Instance != "cli-instance" || opts.Network != "none" || opts.Podman != "off" || opts.WorkspaceMode != "write-through" || opts.Landlock != "required" || opts.TTY != "never" || opts.NoAgentConfig {
 		t.Fatalf("unexpected merged scalars: %#v", opts)
 	}
 	if want := []string{"11001:1", "11002:2", "11003:3"}; !reflect.DeepEqual(opts.Publish, want) {

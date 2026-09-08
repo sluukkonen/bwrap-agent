@@ -46,20 +46,27 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # Default: []. Arrays from configuration layers and the CLI are appended.
 # publish = ["13000:3000"]
 
-# Podman mode: "auto" (enable when found), "on" (require), or "off".
-# Enabled modes provide a lazy API socket. Default: "auto".
+# Podman mode: "auto" (enable when compatible and found), "on" (require),
+# or "off". Enabled modes provide a lazy API socket. A read-only workspace or
+# required Landlock enforcement disables "auto". Default: "auto".
 # podman = "auto"
 
-# Host write policy: "workspace" or "state-only".
-# Default: "workspace".
-# write_policy = "workspace"
+# Workspace behavior: "write-through" persists changes, "copy-on-write"
+# provides a writable disposable overlay, and "read-only" rejects writes.
+# Default: "write-through".
+# workspace_mode = "write-through"
+
+# Landlock filesystem enforcement: "auto" enables it when compatible and
+# Podman is off, "required" fails closed, and "off" disables it. Podman is
+# incompatible with required Landlock enforcement. Default: "auto".
+# landlock = "auto"
 
 # Additional existing host paths to bind read-only. Relative paths are
 # resolved from this file's directory. Default: []. Arrays are appended.
 # ro_bind = ["./toolchain"]
 
-# Additional existing host paths to bind read-write. Incompatible with
-# write_policy = "state-only". Default: []. Arrays are appended.
+# Additional existing host paths to bind read-write. Default: []. Arrays are
+# appended.
 # rw_bind = ["/var/lib/example"]
 
 # Remove environment variables from the sandbox. Default: [].

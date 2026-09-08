@@ -1,21 +1,21 @@
 services:
   root:
-    image: docker.io/library/alpine:3.22
+    image: ${BWRAP_AGENT_TEST_IMAGE}
     user: "0:0"
     working_dir: /workspace
     volumes:
-      - ../..:/workspace:ro
+      - .:/workspace:ro
     command:
       - /bin/sh
       - -ec
       - 'test "$$(id -u)" = 0; test -r README.md; echo compose-root-ok'
 
   nonroot:
-    image: docker.io/library/alpine:3.22
+    image: ${BWRAP_AGENT_TEST_IMAGE}
     user: "1000:1000"
     working_dir: /workspace
     volumes:
-      - ../..:/workspace:ro
+      - .:/workspace:ro
     command:
       - /bin/sh
       - -ec

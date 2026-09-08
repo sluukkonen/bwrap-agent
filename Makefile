@@ -1,9 +1,10 @@
 BINARY := bin/bwrap-agent
+INTEGRATION_SERVER := bin/bwrap-agent-integration-server
 GO_PACKAGE := ./cmd/bwrap-agent
 GO_BUILD_FLAGS := -buildvcs=false -trimpath
 PREFIX ?= /usr/local
 
-.PHONY: all build test test-race vet integration dist install clean
+.PHONY: all build test test-race vet integration integration-testcontainers dist install clean
 
 all: build
 
@@ -21,7 +22,11 @@ vet:
 	go vet ./...
 
 integration: build
-	./tests/integration.sh ./$(BINARY)
+	CGO_ENABLED=0 go build $(GO_BUILD_FLAGS) -o $(INTEGRATION_SERVER) ./tests/fixtures/port-server
+	./tests/integration.sh ./$(BINARY) ./$(INTEGRATION_SERVER)
+
+integration-testcontainers: build
+	./tests/testcontainers.sh ./$(BINARY)
 
 dist:
 	mkdir -p dist
@@ -35,4 +40,5 @@ install: build
 
 clean:
 	rm -f $(BINARY)
+	rm -f $(INTEGRATION_SERVER)
 	rm -rf dist

@@ -542,12 +542,36 @@ func relayPTY(input, output, master int, interactive bool) error {
 	}
 }
 
-func sandboxInit(argv []string) int {
+func sandboxInit(argv []string, podmanEnabled bool) int {
 	if len(argv) == 0 {
 		fmt.Fprintln(os.Stderr, "bwrap-agent: internal init received no command")
 		return 126
 	}
-	podmanEnabled := os.Getenv("BWRAP_AGENT_PODMAN") == "1"
+	if podmanEnabled {
+		return runLockedSandbox(argv)
+	}
+	return sandboxRuntime(argv, false)
+}
+
+func sandboxRuntime(argv []string, podmanEnabled bool) int {
+	if len(argv) == 0 {
+		fmt.Fprintln(os.Stderr, "bwrap-agent: internal runtime received no command")
+		return 126
+	}
+	if podmanEnabled {
+		if err := makeMountNamespacePrivate(); err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: make Podman mount-lock namespace private: %v\n", err)
+			return 70
+		}
+	}
+	var landlockWrites []string
+	if encoded, found := os.LookupEnv(internalLandlockEnvironment); found {
+		_ = os.Unsetenv(internalLandlockEnvironment)
+		if err := json.Unmarshal([]byte(encoded), &landlockWrites); err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: invalid internal Landlock policy: %v\n", err)
+			return 70
+		}
+	}
 	var socket *podmanSocket
 	var service *managedProcess
 	if podmanEnabled {
@@ -560,6 +584,21 @@ func sandboxInit(argv []string) int {
 		defer socket.Close()
 		_ = os.Setenv("DOCKER_HOST", "unix://"+socket.path)
 		_ = os.Setenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", socket.path)
+	}
+	if len(landlockWrites) > 0 {
+		if err := applyLandlock(landlockWrites); err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: Landlock enforcement failed: %v\n", err)
+			return 70
+		}
+		executable, err := exec.LookPath(argv[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: failed to launch: %v\n", err)
+			return launchErrorCode(err)
+		}
+		if err := unix.Exec(executable, argv, os.Environ()); err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: failed to launch: %v\n", err)
+			return launchErrorCode(err)
+		}
 	}
 
 	command := exec.Command(argv[0], argv[1:]...)

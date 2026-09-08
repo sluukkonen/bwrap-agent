@@ -7,13 +7,14 @@ host user
   `-- podman unshare                 rootless user/mount namespace + subuid map
        `-- pasta --splice-only       loopback-only proxy and published-port forwarding
             `-- bwrap               synthetic filesystem + PID/IPC/UTS/cgroup namespaces
-                 `-- Go sandbox init process
-                      |-- podman service  lazily activated sandbox-local API
-                      `-- agent           OpenCode, Aider, Codex, shell, ...
-                           `-- containers nested inside every boundary above
+                 `-- Go namespace trampoline
+                      `-- locked child user/mount namespace + full subuid map
+                           |-- podman service  lazily activated sandbox-local API
+                           `-- agent           OpenCode, Pi, shell, ...
+                                `-- containers nested inside every boundary above
 ```
 
-The ordering is essential. `bwrap --unshare-all` first creates a one-ID user namespace. Rootless Podman then cannot use `newuidmap` to install the user's subordinate ranges. Entering `podman unshare` first installs the complete mapping; bubblewrap deliberately does **not** create another user namespace. It still owns the mount, PID, IPC, UTS, and cgroup namespace boundaries.
+The ordering is essential. Putting `bwrap --unshare-all` first would create a one-ID user namespace, after which rootless Podman could not use `newuidmap` to install the user's subordinate ranges. Entering `podman unshare` first installs the complete mapping; Bubblewrap constructs its mount, PID, IPC, UTS, and cgroup namespace boundaries there. Its init then identity-maps the complete available UID/GID range into a child user/mount namespace. Because the mount hierarchy crosses into a less-privileged user namespace, Linux locks its inherited mounts together and locks their read-only flags. The agent retains the mappings needed by Podman but cannot separate a protected child mount from its writable ancestor.
 
 For interactive sessions, the launcher first allocates a dedicated PTY and makes the namespace stack its foreground process group. Bubblewrap then omits `--new-session`, because the proxy PTY—not the user's host TTY—is the controlling terminal. The parent relays input, output, resize events, and signals, restores termios, and disables mouse/focus/paste/alternate-screen modes at exit. Non-interactive commands retain `--new-session` and direct stdout/stderr for clean pipelines.
 
@@ -33,20 +34,26 @@ The root begins as an empty tmpfs. The launcher adds:
 |---|---|---|
 | `/usr`, legacy lib/bin paths | read-only | host compilers, runtimes, Podman, shell tools |
 | `/etc` | read-only | NSS, TLS, registries, package/tool configuration |
-| `/sys`, `/opt`, `/nix/store` when present | read-only | runtime/tool compatibility |
-| project at its original absolute path | policy-controlled | source and build outputs |
+| `/sys`, `/opt`, `/nix/store` when present | policy-controlled | runtime/tool compatibility; Podman uses the outer rootless sysfs view |
+| project at its original absolute path | workspace-mode controlled | source and build outputs |
 | managed instance `state/` at its original path | read-write | isolated home, caches, Podman storage |
 | external Git common directory | policy-controlled | make linked worktrees functional |
 | `/proc`, `/dev` | new virtual filesystems | process and minimal device access; only host `/dev/net/tun` is added for nested pasta |
 | `/tmp`, `/var/tmp`, `/run` | private | scratch data and API sockets |
 
-Keeping the project's original absolute path avoids breaking absolute symlinks and build metadata. A linked worktree's `.git` file points outside the worktree, so its common Git directory is mounted too. Before granting that extra exposure, the launcher validates the worktree's `commondir` and backlink. External submodule and separate Git directories require `core.worktree` to resolve back to the selected project. Unrelated or malformed pointers fail closed. The default `workspace` write policy makes validated project and Git paths writable. `state-only` mounts them read-only, rejects explicit read-write binds, and sets `GIT_OPTIONAL_LOCKS=0` for inspection-oriented Git commands.
+Keeping the project's original absolute path avoids breaking absolute symlinks and build metadata. A linked worktree's `.git` file points outside the worktree, so its common Git directory is mounted too. Before granting that extra exposure, the launcher validates the worktree's `commondir` and backlink. External submodule and separate Git directories require `core.worktree` to resolve back to the selected project. Unrelated or malformed pointers fail closed. `write-through` binds validated project and Git paths writable, `copy-on-write` uses invisible temporary OverlayFS upper layers, and `read-only` binds them read-only and sets `GIT_OPTIONAL_LOCKS=0`.
 
-Under `workspace`, a final layer of read-only mounts overrides the writable project, Git, and explicit-bind layers for conventional high-impact control paths. It covers bwrap-agent project configuration; Git config, hooks, and per-worktree config; OpenCode project config, plugins, and tools; and Pi settings, extensions, and package locations. Existing regular files and directories are rebound read-only. Writable parent control directories are also rebound to themselves so they become mountpoints and cannot be renamed around their protected children; their unprotected contents remain writable. Missing entries use empty file, empty JSON, or empty-directory masks kept beneath the host-only instance root. Because Linux bind mounts require a destination inode, the launcher creates identity-tracked empty mountpoints immediately before launch. A project-scoped host-only registry and shared lifetime lock let concurrent instances reuse the same verified inodes; only the last launcher removes them. Signal capture starts before this lease is acquired and remains active through cleanup. Failure to create or safely remove a placeholder fails the invocation. An absent OpenCode directory and a Pi directory with no existing trust-triggering resource are masked as whole neutral directories, avoiding synthetic files that could change agent trust behavior. Every project-relative component is inspected without following symlinks; symlinks and special-file surprises fail closed.
+Under `write-through`, a final layer overrides the writable project and Git layers for conventional high-impact control paths. It covers bwrap-agent project configuration; Git config, hooks, and per-worktree config; OpenCode project config, plugins, and tools; and Pi settings, extensions, and package locations. When Podman is enabled, the child namespace makes those mounts a kernel-locked unit with their ancestors. Direct agent mount operations, non-recursive ancestor binds, and privileged nested containers cannot detach the masks or change their read-only flags. Missing entries retain the identity-tracked placeholder and project-wide lifetime-lock design. `copy-on-write` already prevents persistence for the complete workspace and therefore does not add redundant nested control mounts; `read-only` makes the complete workspace immutable.
 
-Protection applies regardless of the target executable. `run --allow-control-file-writes` is a CLI-only, all-or-nothing escape hatch; it also permits symlinked project configuration and emits a warning in `workspace`. `run --dry-run` reports the effective `protected_paths`. `state-only` needs no overlay because the complete project and Git mounts are already read-only.
+The sandbox init executable is passed to Bubblewrap through an inherited read-only file descriptor, copied onto private executable-safe backing, and bind-mounted read-only at `/run/bwrap-agent/init`. It therefore neither inherits `noexec` from persistent state nor becomes mutable inside the sandbox. Packaged executable resources use the same mechanism.
 
-Instance state is the deliberate writable exception under `state-only`. All state belongs to the managed store; per-run custom state paths are not supported. The store is rejected if either its lexical or canonical path overlaps the project, validated external Git metadata, or a read-write bind. This keeps its host-only metadata and lock outside every agent-writable tree and prevents the writable state mount from covering protected workspace mounts. A future ephemeral mode can supply writable state that is discarded at shutdown.
+Protection applies regardless of the target executable. `run --allow-control-file-writes` is a CLI-only, all-or-nothing escape hatch; it also permits symlinked project configuration and emits a warning in `write-through`. `run --dry-run` reports the effective `protected_paths`, workspace mode, Bubblewrap tier, and Landlock status.
+
+Instance state remains writable and persistent independently of workspace mode. All state belongs to the managed store; per-run custom state paths are not supported. The store is rejected if either its lexical or canonical path overlaps the project, validated external Git metadata, or a read-write bind. A future state-lifetime option can make this state disposable.
+
+When Podman is disabled, Landlock ABI 3 or newer can enforce the generated write allowlist after Bubblewrap completes its mount layout. State, private temporary/runtime paths, explicit read-write binds, and writable workspace views are allowed; everything else is denied mutation. Further user namespaces are disabled. Podman is incompatible with required Landlock because container setup needs mount and pivot operations; automatic Landlock reports that it was skipped when Podman is enabled.
+
+Bubblewrap 0.11 is accepted only as a non-setuid compatibility tier and produces a warning. All trusted destination directories are emitted before project or state mounts so setup never deliberately creates parent directories through an already-mounted untrusted tree. Bubblewrap 0.12 or newer remains the supported security tier because it fixes upstream path-resolution behavior that the launcher cannot fully replace.
 
 Agent support is command-oriented rather than hard-coded: `run` requires a program and passes the remainder through unchanged. An internal registry keyed by executable basename lets an adapter contribute read-only mounts, sandbox environment values, seed-once mutable files, and an optional packaged-command mount. Auto-discovered sources are canonicalized and rejected when their lexical or resolved paths overlap the project, instance state, external Git metadata, or explicit writable binds, preventing a prior sandbox run from retargeting a source toward hidden host data.
 
@@ -54,7 +61,7 @@ The OpenCode adapter mounts `XDG_CONFIG_HOME/opencode` and documented path-based
 
 ## Podman state and socket
 
-Each named instance gets its own storage configuration, graph root, run root, home, and runtime directory. This prevents container/image/name conflicts. Podman integration defaults to `auto`: it is enabled when the executable is available, can be required with `run --podman on`, and can be disabled with `run --podman off`.
+Each named instance gets its own storage configuration, graph root, run root, home, and runtime directory. This prevents container/image/name conflicts. Podman integration defaults to `auto`: it is enabled when the executable is available, can be required with `run --podman on`, and can be disabled with `run --podman off`. Read-only workspaces and required Landlock enforcement remain incompatible with Podman.
 
 An enabled instance creates its API listener before launching the target. The listener uses the short sandbox-private `/run/bwrap-agent/runtime` path, avoiding Unix socket pathname limits regardless of the managed-store or instance-name length; the outer `podman unshare` process separately receives the host-visible instance runtime path. The service itself starts lazily on the first connection by inheriting that listener through the systemd socket-activation descriptor contract. Docker-compatible clients therefore see a stable endpoint without adding a readiness delay to launches that do not use it. `DOCKER_HOST` and the Testcontainers override point to the socket; `CONTAINER_HOST` remains unset so ordinary Podman commands continue to run locally.
 

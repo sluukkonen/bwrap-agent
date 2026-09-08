@@ -112,7 +112,7 @@ func piNeedsIndividualProtection(project string) (bool, error) {
 }
 
 func prepareControlFileProtection(opts Options, identity instanceIdentity) ([]controlMount, []string, []controlCleanup, error) {
-	if opts.AllowControlFileWrites || opts.WritePolicy == "state-only" {
+	if opts.AllowControlFileWrites || opts.WorkspaceMode != "write-through" {
 		return nil, nil, nil, nil
 	}
 	project := identity.Project

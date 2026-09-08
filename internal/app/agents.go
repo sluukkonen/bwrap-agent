@@ -16,6 +16,7 @@ import (
 type agentMount struct {
 	Source      string
 	Destination string
+	Executable  bool
 }
 
 type agentSetup struct {
@@ -250,7 +251,7 @@ func prepareOpenCode(context agentContext) (agentSetup, error) {
 		return setup, err
 	}
 	if found {
-		setup.Mounts = append(setup.Mounts, agentMount{configSource, filepath.Join(context.state, "config", "opencode")})
+		setup.Mounts = append(setup.Mounts, agentMount{Source: configSource, Destination: filepath.Join(context.state, "config", "opencode")})
 	}
 	dataBase := envValue(context.hostEnv, "XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	if err := seedAgentFile(context, filepath.Join(dataBase, "opencode", "auth.json"), "data/opencode/auth.json"); err != nil {
@@ -273,7 +274,7 @@ func prepareOpenCode(context agentContext) (agentSetup, error) {
 		if err != nil {
 			return setup, fmt.Errorf("%s: %w", override.name, err)
 		}
-		setup.Mounts = append(setup.Mounts, agentMount{source, override.target})
+		setup.Mounts = append(setup.Mounts, agentMount{Source: source, Destination: override.target})
 		setup.Environment[override.name] = override.target
 	}
 	return setup, nil
@@ -342,7 +343,7 @@ func preparePi(context agentContext) (agentSetup, error) {
 			if err != nil {
 				return setup, err
 			}
-			setup.Mounts = append(setup.Mounts, agentMount{resolved, filepath.Join(agentDirectory, entry.Name())})
+			setup.Mounts = append(setup.Mounts, agentMount{Source: resolved, Destination: filepath.Join(agentDirectory, entry.Name())})
 		}
 	}
 	globalSkills, found, err := resolveAgentSource(context, filepath.Join(home, ".agents", "skills"), true, false)
@@ -350,7 +351,7 @@ func preparePi(context agentContext) (agentSetup, error) {
 		return setup, err
 	}
 	if found {
-		setup.Mounts = append(setup.Mounts, agentMount{globalSkills, filepath.Join(context.state, "home", ".agents", "skills")})
+		setup.Mounts = append(setup.Mounts, agentMount{Source: globalSkills, Destination: filepath.Join(context.state, "home", ".agents", "skills")})
 	}
 	return setup, nil
 }
@@ -386,8 +387,8 @@ func resolvePiExternalCommand(context agentContext, requested []string, resolved
 		command := append([]string{filepath.Join(destination, relative)}, requested[1:]...)
 		commandSetup := agentSetup{
 			Mounts: []agentMount{
-				{runtime, "/run/bwrap-agent/agent-runtime/node"},
-				{directory, destination},
+				{Source: runtime, Destination: "/run/bwrap-agent/agent-runtime/node", Executable: true},
+				{Source: directory, Destination: destination},
 			},
 			Environment: map[string]string{
 				"PATH": "/run/bwrap-agent/agent-runtime:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -396,5 +397,5 @@ func resolvePiExternalCommand(context agentContext, requested []string, resolved
 		return command, commandSetup, nil
 	}
 	command := append([]string{"/run/bwrap-agent/command"}, requested[1:]...)
-	return command, agentSetup{Mounts: []agentMount{{resolved, "/run/bwrap-agent/command"}}}, nil
+	return command, agentSetup{Mounts: []agentMount{{Source: resolved, Destination: "/run/bwrap-agent/command", Executable: true}}}, nil
 }

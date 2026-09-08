@@ -6,8 +6,7 @@
 2. Run each instance in a transient user systemd scope with CPU, memory, process, and wall-time limits plus reliable `KillMode=mixed` cleanup.
 3. Replace the broad `/etc` mount with a generated allowlist and make optional tool roots policy-driven.
 4. Add a centrally enforced policy layer, distinct from the convenience TOML config, whose project-local requests can only narrow administrator-defined limits.
-5. Add seccomp and Landlock defense-in-depth profiles, including explicit denial of mount-related and kernel attack-surface syscalls not needed by nested Podman.
-6. Add integration tests for Podman CLI, Compose, Docker-compatible API, Java/Go/Node/Python Testcontainers, volumes, builds, and concurrent identical ports.
+5. Add seccomp profiles for kernel attack-surface syscalls not needed by each workload class.
 
 ## UX and fleet features
 

@@ -2,8 +2,10 @@ package app
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,6 +130,88 @@ func TestStateFileReplacesSymlinkWithoutFollowingIt(t *testing.T) {
 	}
 }
 
+func TestMountExternalEtcLinkTarget(t *testing.T) {
+	root := t.TempDir()
+	etc := filepath.Join(root, "etc")
+	run := filepath.Join(root, "run")
+	if err := os.MkdirAll(etc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(run, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(run, "resolv.conf")
+	if err := os.WriteFile(target, []byte("nameserver 192.0.2.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(etc, "resolv.conf")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	mounts := mountBuilder{made: map[string]bool{"/": true}}
+	if err := mountExternalEtcLinkTarget(&mounts, link); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(mounts.finish(), "\x00")
+	want := "--ro-bind\x00" + target + "\x00" + target
+	if !strings.Contains(joined, want) {
+		t.Fatalf("external resolver target was not mounted: %#v", mounts.args)
+	}
+}
+
+func TestMountExternalEtcLinkTargetSkipsDanglingSymlink(t *testing.T) {
+	root := t.TempDir()
+	link := filepath.Join(root, "resolv.conf")
+	if err := os.Symlink(filepath.Join(root, "missing", "resolv.conf"), link); err != nil {
+		t.Fatal(err)
+	}
+	mounts := mountBuilder{made: map[string]bool{"/": true}}
+	if err := mountExternalEtcLinkTarget(&mounts, link); err != nil {
+		t.Fatal(err)
+	}
+	if arguments := mounts.finish(); len(arguments) != 0 {
+		t.Fatalf("dangling resolver target added mounts: %#v", arguments)
+	}
+}
+
+func TestMountExternalEtcLinkTargetPreservesNamedTargetPath(t *testing.T) {
+	root := t.TempDir()
+	etc := filepath.Join(root, "etc")
+	run := filepath.Join(root, "run")
+	varDirectory := filepath.Join(root, "var")
+	if err := os.MkdirAll(etc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(run, "NetworkManager"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(varDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canonicalTarget := filepath.Join(run, "NetworkManager", "resolv.conf")
+	if err := os.WriteFile(canonicalTarget, []byte("nameserver 192.0.2.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "run"), filepath.Join(varDirectory, "run")); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(etc, "resolv.conf")
+	linkTarget := filepath.Join("..", "var", "run", "NetworkManager", "resolv.conf")
+	if err := os.Symlink(linkTarget, link); err != nil {
+		t.Fatal(err)
+	}
+	mounts := mountBuilder{made: map[string]bool{"/": true}}
+	if err := mountExternalEtcLinkTarget(&mounts, link); err != nil {
+		t.Fatal(err)
+	}
+	namedTarget := filepath.Clean(filepath.Join(etc, linkTarget))
+	joined := strings.Join(mounts.finish(), "\x00")
+	want := "--ro-bind\x00" + canonicalTarget + "\x00" + namedTarget
+	if !strings.Contains(joined, want) {
+		t.Fatalf("resolver target mount = %#v, want %q", mounts.finish(), want)
+	}
+}
+
 func TestStateFileRejectsSymlinkedParent(t *testing.T) {
 	root := t.TempDir()
 	state, outside := filepath.Join(root, "state"), filepath.Join(root, "outside")
@@ -165,8 +249,8 @@ func TestCLIParsingAndPassthrough(t *testing.T) {
 	if opts.Podman != "auto" {
 		t.Fatalf("podman mode = %q, want auto", opts.Podman)
 	}
-	if opts.WritePolicy != "workspace" {
-		t.Fatalf("write policy = %q, want workspace", opts.WritePolicy)
+	if opts.WorkspaceMode != "write-through" || opts.Landlock != "auto" {
+		t.Fatalf("workspace/Landlock defaults = %q/%q", opts.WorkspaceMode, opts.Landlock)
 	}
 	stdout.Reset()
 	stderr.Reset()
@@ -184,7 +268,7 @@ func TestCLIParsingAndPassthrough(t *testing.T) {
 }
 
 func TestCLIRejectsInvalidInputs(t *testing.T) {
-	for _, args := range [][]string{{"--"}, {"opencode"}, {"--init-config"}, {"config"}, {"run"}, {"run", "--podman", "invalid", "/bin/true"}, {"run", "--write-policy", "invalid", "/bin/true"}, {"run", "--network-allow", "ssh://example.com", "/bin/true"}, {"run", "--network", "host", "--network-allow", "https://example.com", "/bin/true"}, {"run", "--no-podman", "/bin/true"}, {"run", "--podman-socket", "/bin/true"}, {"run", "--no-git-common-dir", "/bin/true"}} {
+	for _, args := range [][]string{{"--"}, {"opencode"}, {"--init-config"}, {"config"}, {"run"}, {"run", "--podman", "invalid", "/bin/true"}, {"run", "--workspace-mode", "invalid", "/bin/true"}, {"run", "--landlock", "invalid", "/bin/true"}, {"run", "--network-allow", "ssh://example.com", "/bin/true"}, {"run", "--network", "host", "--network-allow", "https://example.com", "/bin/true"}, {"run", "--no-podman", "/bin/true"}, {"run", "--podman-socket", "/bin/true"}, {"run", "--no-git-common-dir", "/bin/true"}, {"run", "--write-policy", "workspace", "/bin/true"}} {
 		var stdout, stderr bytes.Buffer
 		_, code, err := parseOptions(args, &stdout, &stderr)
 		if err == nil || code != 2 {
@@ -228,11 +312,12 @@ func TestHelpIsHandledWithoutBuildingPlan(t *testing.T) {
 		"--network=private|host|none",
 		"--network-allow=ORIGIN",
 		"--podman=auto|on|off",
-		"--write-policy=workspace|state-only",
+		"--workspace-mode=write-through|copy-on-write|read-only",
+		"--landlock=auto|required|off",
 		"--allow-control-file-writes",
 		"--tty=auto|always|never",
 		"private (HTTP/HTTPS allowlist enforced), host (shared and unrestricted), or none (disabled)",
-		"auto (enable if found), on (require), or off (disable)",
+		"auto (enable if compatible and found), on (require), or off (disable)",
 		"auto (when stdin and stdout are terminals), always, or never",
 		"HOST_PORT=0 chooses a free port",
 		"inherit NAME from the host",
@@ -241,7 +326,7 @@ func TestHelpIsHandledWithoutBuildingPlan(t *testing.T) {
 			t.Errorf("help does not contain %q:\n%s", expected, help)
 		}
 	}
-	for _, obsolete := range []string{"--no-podman", "--podman-socket", "--no-git-common-dir", "--state-dir"} {
+	for _, obsolete := range []string{"--no-podman", "--podman-socket", "--no-git-common-dir", "--state-dir", "--write-policy"} {
 		if strings.Contains(help, obsolete) {
 			t.Errorf("help still contains obsolete option %q", obsolete)
 		}
@@ -328,7 +413,7 @@ func TestLinkedWorktreeCommonDirectoryIsMounted(t *testing.T) {
 	}
 	readOnlyPlan, err := BuildPlan(Options{
 		Project: worktree, Instance: "read-only-worktree-test",
-		Network: "host", Podman: "off", WritePolicy: "state-only", TTY: "never", Command: []string{"/bin/true"},
+		Network: "host", Podman: "off", WorkspaceMode: "read-only", TTY: "never", Command: []string{"/bin/true"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +437,10 @@ func TestTerminalEnvironment(t *testing.T) {
 
 func TestBuildPlanWithoutPodman(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	plan, err := BuildPlan(Options{Project: ".", Instance: "plan-test", Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"}})
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "plan-test", Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"},
+		Env: []string{"BWRAP_AGENT_PODMAN=1"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,11 +456,11 @@ func TestBuildPlanWithoutPodman(t *testing.T) {
 	}
 }
 
-func TestStateOnlyWritePolicy(t *testing.T) {
+func TestReadOnlyWorkspaceMode(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	plan, err := BuildPlan(Options{
-		Project: ".", Instance: "state-only-test", Network: "host", Podman: "off",
-		WritePolicy: "state-only", TTY: "never", Command: []string{"/bin/true"},
+		Project: ".", Instance: "read-only-test", Network: "host", Podman: "off",
+		WorkspaceMode: "read-only", TTY: "never", Command: []string{"/bin/true"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -391,34 +479,156 @@ func TestStateOnlyWritePolicy(t *testing.T) {
 			t.Errorf("missing mount %q in %#v", mount, plan.Bwrap)
 		}
 	}
-	if plan.WritePolicy != "state-only" || plan.LaunchEnv["GIT_OPTIONAL_LOCKS"] != "0" {
-		t.Fatalf("unexpected state-only plan: %#v", plan)
+	if plan.WorkspaceMode != "read-only" || plan.LaunchEnv["GIT_OPTIONAL_LOCKS"] != "0" {
+		t.Fatalf("unexpected read-only plan: %#v", plan)
 	}
 	var output bytes.Buffer
 	if err := writePlanJSON(&output, plan); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), `"write_policy": "state-only"`) {
-		t.Fatalf("dry-run JSON omitted write policy: %s", output.String())
+	if !strings.Contains(output.String(), `"workspace_mode": "read-only"`) {
+		t.Fatalf("dry-run JSON omitted workspace mode: %s", output.String())
 	}
 }
 
-func TestStateOnlyPolicyRejectsRWBind(t *testing.T) {
+func TestReadOnlyWorkspaceAllowsExplicitRWBind(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	_, err := BuildPlan(Options{
-		Project: ".", Instance: "state-only-rw-bind", Network: "host", Podman: "off",
-		WritePolicy: "state-only", RWBind: []string{"."}, TTY: "never", Command: []string{"/bin/true"},
+	extra := t.TempDir()
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "read-only-rw-bind", Network: "host", Podman: "off",
+		WorkspaceMode: "read-only", RWBind: []string{extra}, TTY: "never", Command: []string{"/bin/true"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "--rw-bind is incompatible") {
-		t.Fatalf("unexpected error: %v", err)
+	if err != nil || !strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--bind\x00"+extra+"\x00"+extra) {
+		t.Fatalf("explicit writable bind was not preserved: %v %#v", err, plan.Bwrap)
 	}
 }
 
-func TestStateOnlyGitOptionalLocksCanBeOverridden(t *testing.T) {
+func TestCopyOnWriteWorkspaceUsesTemporaryOverlays(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "copy-on-write-plan", Network: "host", Podman: "off",
+		WorkspaceMode: "copy-on-write", TTY: "never", Command: []string{"/bin/true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := resolveExisting(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan.Bwrap, "\x00")
+	if !strings.Contains(joined, "--overlay-src\x00"+project+"\x00--tmp-overlay\x00"+project) {
+		t.Fatalf("copy-on-write workspace overlay missing: %#v", plan.Bwrap)
+	}
+	if len(plan.ProtectedPaths) != 0 {
+		t.Fatalf("copy-on-write mode should not add persistent control-path masks: %#v", plan.ProtectedPaths)
+	}
+}
+
+func TestDestinationDirectoriesPrecedeUntrustedWorkspaceMounts(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "mount-order", Network: "private", Podman: "off",
+		TTY: "never", Command: []string{"/bin/true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := resolveExisting(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceIndex := -1
+	for index := 0; index+2 < len(plan.Bwrap); index++ {
+		if plan.Bwrap[index] == "--bind" && plan.Bwrap[index+1] == project && plan.Bwrap[index+2] == project {
+			workspaceIndex = index
+			break
+		}
+	}
+	if workspaceIndex < 0 {
+		t.Fatalf("workspace mount missing: %#v", plan.Bwrap)
+	}
+	for index := workspaceIndex + 3; index < len(plan.Bwrap); index++ {
+		if plan.Bwrap[index] == "--dir" {
+			t.Fatalf("destination directory emitted after workspace mount at indexes %d and %d: %#v", workspaceIndex, index, plan.Bwrap)
+		}
+	}
+}
+
+func TestReadOnlyAndRequiredLandlockResolveAutomaticPodmanOff(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	tests := []Options{
+		{Project: ".", Instance: "readonly-auto-podman", Network: "host", Podman: "auto", WorkspaceMode: "read-only", TTY: "never", Command: []string{"/bin/true"}},
+	}
+	if abi, err := queryLandlockABI(); err == nil && abi >= minimumLandlockABI {
+		tests = append(tests, Options{Project: ".", Instance: "required-auto-podman", Network: "host", Podman: "auto", Landlock: "required", TTY: "never", Command: []string{"/bin/true"}})
+	} else {
+		t.Logf("required-Landlock BuildPlan case skipped: ABI=%d error=%v", abi, err)
+	}
+	for _, test := range tests {
+		plan, err := BuildPlan(test)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] != "0" || len(plan.Outer) != 0 {
+			t.Fatalf("automatic Podman was not disabled: %#v", plan)
+		}
+		if test.Landlock == "required" && plan.Landlock.Effective != "enabled" {
+			t.Fatalf("required Landlock was not enabled: %#v", plan.Landlock)
+		}
+	}
+}
+
+func TestReadOnlyAndRequiredLandlockRejectExplicitPodman(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	for _, test := range []Options{
+		{Project: ".", Instance: "readonly-on-podman", Network: "host", Podman: "on", WorkspaceMode: "read-only", TTY: "never", Command: []string{"/bin/true"}},
+		{Project: ".", Instance: "required-on-podman", Network: "host", Podman: "on", Landlock: "required", TTY: "never", Command: []string{"/bin/true"}},
+	} {
+		if _, err := BuildPlan(test); err == nil || !strings.Contains(err.Error(), "incompatible") {
+			t.Fatalf("incompatible Podman selection result: %v", err)
+		}
+	}
+}
+
+func TestInternalLandlockEnvironmentIsLauncherOwned(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	for _, test := range []Options{
+		{Project: ".", Instance: "landlock-env-off", Network: "host", Podman: "off", Landlock: "off", TTY: "never", Command: []string{"/bin/true"}, Env: []string{internalLandlockEnvironment + "=invalid"}},
+		{Project: ".", Instance: "landlock-env-podman", Network: "host", Podman: "on", Landlock: "auto", TTY: "never", Command: []string{"/bin/true"}, Env: []string{internalLandlockEnvironment + "=invalid"}},
+	} {
+		plan, err := BuildPlan(test)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := plan.LaunchEnv[internalLandlockEnvironment]; exists {
+			t.Fatalf("user-controlled internal Landlock policy survived with status %#v", plan.Landlock)
+		}
+	}
+
+	abi, err := queryLandlockABI()
+	if err != nil || abi < minimumLandlockABI {
+		t.Logf("enabled Landlock policy case skipped: ABI=%d error=%v", abi, err)
+		return
+	}
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "landlock-env-enabled", Network: "host", Podman: "off", Landlock: "required",
+		TTY: "never", Command: []string{"/bin/true"}, Env: []string{internalLandlockEnvironment + "=invalid"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, exists := plan.LaunchEnv[internalLandlockEnvironment]
+	if !exists || encoded == "invalid" || !json.Valid([]byte(encoded)) {
+		t.Fatalf("enabled Landlock policy was not launcher-generated: %q", encoded)
+	}
+}
+
+func TestReadOnlyGitOptionalLocksCanBeOverridden(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	base := Options{
-		Project: ".", Instance: "state-only-env", Network: "host", Podman: "off",
-		WritePolicy: "state-only", TTY: "never", Command: []string{"/bin/true"},
+		Project: ".", Instance: "read-only-env", Network: "host", Podman: "off",
+		WorkspaceMode: "read-only", TTY: "never", Command: []string{"/bin/true"},
 	}
 	base.Env = []string{"GIT_OPTIONAL_LOCKS=1"}
 	plan, err := BuildPlan(base)
@@ -428,7 +638,7 @@ func TestStateOnlyGitOptionalLocksCanBeOverridden(t *testing.T) {
 	if plan.LaunchEnv["GIT_OPTIONAL_LOCKS"] != "1" {
 		t.Fatalf("explicit environment did not override default: %#v", plan.LaunchEnv)
 	}
-	base.Instance = "state-only-env-unset"
+	base.Instance = "read-only-env-unset"
 	base.Env = nil
 	base.UnsetEnv = []string{"GIT_OPTIONAL_LOCKS"}
 	plan, err = BuildPlan(base)
@@ -442,7 +652,10 @@ func TestStateOnlyGitOptionalLocksCanBeOverridden(t *testing.T) {
 
 func TestEnabledPodmanPlan(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	base := Options{Project: ".", Instance: "podman-plan", Network: "host", Podman: "on", TTY: "never", Command: []string{"/bin/true"}}
+	base := Options{
+		Project: ".", Instance: "podman-plan", Network: "host", Podman: "on", TTY: "never", Command: []string{"/bin/true"},
+		UnsetEnv: []string{"BWRAP_AGENT_PODMAN"},
+	}
 	plan, err := BuildPlan(base)
 	if err != nil {
 		t.Fatal(err)
@@ -459,12 +672,93 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if !strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--setenv\x00XDG_RUNTIME_DIR\x00/run/bwrap-agent/runtime") {
 		t.Fatalf("sandbox runtime directory is not private and short: %#v", plan.Bwrap)
 	}
+	joined := strings.Join(plan.Bwrap, "\x00")
+	if !strings.Contains(joined, "/run/bwrap-agent/init\x00"+internalPodmanInitMode) || strings.Contains(joined, "/run/bwrap-agent/init\x00"+internalInitMode) {
+		t.Fatalf("Podman plan did not select the protected init mode: %#v", plan.Bwrap)
+	}
+	for _, path := range []string{"/usr", "/etc"} {
+		if !strings.Contains(joined, "--ro-bind\x00"+path+"\x00"+path) {
+			t.Errorf("read-only system view missing for %s: %#v", path, plan.Bwrap)
+		}
+	}
+	if !strings.Contains(joined, "--bind\x00/sys\x00/sys") {
+		t.Fatalf("Podman-compatible sysfs bind missing: %#v", plan.Bwrap)
+	}
+	if len(plan.ProtectedPaths) == 0 {
+		t.Fatal("write-through Podman plan omitted protected control paths")
+	}
+	if !strings.Contains(joined, "--perms\x000555\x00--ro-bind-data\x003\x00/run/bwrap-agent/init") || strings.Contains(joined, "--file") || len(plan.Launcher) != 3 || plan.Launcher[1] != internalLaunchMode || plan.Launcher[2] != "--" {
+		t.Fatalf("fd-backed sandbox init is missing: %#v", plan.Bwrap)
+	}
 	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "config", "containers", "containers.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(containersConfig, []byte("host.containers.internal")) {
 		t.Fatalf("host-network Podman config unexpectedly contains private proxy settings: %s", containersConfig)
+	}
+	if bytes.Contains(containersConfig, []byte("label = false")) {
+		t.Fatalf("write-through Podman unexpectedly disabled container labeling: %s", containersConfig)
+	}
+}
+
+func TestPodmanPlanInjectsExternalCommandReadOnly(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	executable := filepath.Join(t.TempDir(), "external-command")
+	if err := os.WriteFile(executable, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "podman-external-command", Network: "host", Podman: "on",
+		TTY: "never", Command: []string{executable},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan.Bwrap, "\x00")
+	if !strings.Contains(joined, "--perms\x000555\x00--ro-bind-data\x004\x00/run/bwrap-agent/command") {
+		t.Fatalf("external executable is not injected read-only: %#v", plan.Bwrap)
+	}
+	if len(plan.Launcher) != 4 || plan.Launcher[2] != executable || plan.Launcher[3] != "--" {
+		t.Fatalf("external executable descriptor source missing: %#v", plan.Launcher)
+	}
+}
+
+func TestPodmanPlanSupportsReadOnlyUnixSocket(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "agent.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "podman-socket-bind", Network: "host", Podman: "on",
+		ROBind: []string{path}, TTY: "never", Command: []string{"/bin/true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--ro-bind\x00"+path+"\x00"+path) {
+		t.Fatalf("read-only socket bind missing: %#v", plan.Bwrap)
+	}
+}
+
+func TestCopyOnWritePodmanDisablesNestedSELinuxLabeling(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "podman-copy-on-write-label", Network: "host", Podman: "on",
+		WorkspaceMode: "copy-on-write", TTY: "never", Command: []string{"/bin/true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "config", "containers", "containers.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(containersConfig, []byte("label = false")) {
+		t.Fatalf("copy-on-write Podman did not disable incompatible labeling: %s", containersConfig)
 	}
 }
 

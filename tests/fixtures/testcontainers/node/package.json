@@ -1,0 +1,8 @@
+{
+  "name": "bwrap-agent-testcontainers-node",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "testcontainers": "10.28.0"
+  }
+}

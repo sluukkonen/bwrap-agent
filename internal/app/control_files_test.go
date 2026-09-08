@@ -14,7 +14,7 @@ import (
 func controlTestOptions(project, instance string) Options {
 	return Options{
 		Project: project, Instance: instance, Network: "host", Podman: "off",
-		WritePolicy: "workspace", TTY: "never", Command: []string{"/bin/true"},
+		WorkspaceMode: "write-through", TTY: "never", Command: []string{"/bin/true"},
 	}
 }
 
@@ -130,15 +130,15 @@ func TestControlProtectionEscapeAndStateOnly(t *testing.T) {
 	if len(plan.ProtectedPaths) != 0 {
 		t.Fatalf("escape hatch retained protections: %#v", plan.ProtectedPaths)
 	}
-	opts.Instance = "protected-state-only"
+	opts.Instance = "protected-read-only"
 	opts.AllowControlFileWrites = false
-	opts.WritePolicy = "state-only"
+	opts.WorkspaceMode = "read-only"
 	plan, err = BuildPlan(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.ProtectedPaths) != 0 {
-		t.Fatalf("state-only has redundant protections: %#v", plan.ProtectedPaths)
+		t.Fatalf("read-only has redundant protections: %#v", plan.ProtectedPaths)
 	}
 }
 

@@ -11,18 +11,19 @@ import (
 )
 
 type fileConfig struct {
-	Instance     *string        `toml:"instance"`
-	AgentConfig  *bool          `toml:"agent_config"`
-	Network      *string        `toml:"network"`
-	NetworkAllow []string       `toml:"network_allow"`
-	Publish      []string       `toml:"publish"`
-	Podman       *string        `toml:"podman"`
-	WritePolicy  *string        `toml:"write_policy"`
-	ROBind       []string       `toml:"ro_bind"`
-	RWBind       []string       `toml:"rw_bind"`
-	Env          map[string]any `toml:"env"`
-	UnsetEnv     []string       `toml:"unset_env"`
-	TTY          *string        `toml:"tty"`
+	Instance      *string        `toml:"instance"`
+	AgentConfig   *bool          `toml:"agent_config"`
+	Network       *string        `toml:"network"`
+	NetworkAllow  []string       `toml:"network_allow"`
+	Publish       []string       `toml:"publish"`
+	Podman        *string        `toml:"podman"`
+	WorkspaceMode *string        `toml:"workspace_mode"`
+	Landlock      *string        `toml:"landlock"`
+	ROBind        []string       `toml:"ro_bind"`
+	RWBind        []string       `toml:"rw_bind"`
+	Env           map[string]any `toml:"env"`
+	UnsetEnv      []string       `toml:"unset_env"`
+	TTY           *string        `toml:"tty"`
 }
 
 type envDirectiveKind uint8
@@ -39,17 +40,18 @@ type envDirective struct {
 }
 
 type optionLayer struct {
-	instance     *string
-	agentConfig  *bool
-	network      *string
-	networkAllow []string
-	publish      []string
-	podman       *string
-	writePolicy  *string
-	roBind       []string
-	rwBind       []string
-	environment  map[string]envDirective
-	tty          *string
+	instance      *string
+	agentConfig   *bool
+	network       *string
+	networkAllow  []string
+	publish       []string
+	podman        *string
+	workspaceMode *string
+	landlock      *string
+	roBind        []string
+	rwBind        []string
+	environment   map[string]envDirective
+	tty           *string
 }
 
 func userConfigPath() (string, error) {
@@ -134,7 +136,10 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 	if err := validateChoice("podman", config.Podman, "auto", "on", "off"); err != nil {
 		return optionLayer{}, err
 	}
-	if err := validateChoice("write_policy", config.WritePolicy, "workspace", "state-only"); err != nil {
+	if err := validateChoice("workspace_mode", config.WorkspaceMode, "write-through", "copy-on-write", "read-only"); err != nil {
+		return optionLayer{}, err
+	}
+	if err := validateChoice("landlock", config.Landlock, "auto", "required", "off"); err != nil {
 		return optionLayer{}, err
 	}
 	if err := validateChoice("tty", config.TTY, "auto", "always", "never"); err != nil {
@@ -166,17 +171,18 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 		environment[name] = envDirective{kind: envUnset}
 	}
 	return optionLayer{
-		instance:     config.Instance,
-		agentConfig:  config.AgentConfig,
-		network:      config.Network,
-		networkAllow: networkAllow,
-		publish:      config.Publish,
-		podman:       config.Podman,
-		writePolicy:  config.WritePolicy,
-		roBind:       roBind,
-		rwBind:       rwBind,
-		environment:  environment,
-		tty:          config.TTY,
+		instance:      config.Instance,
+		agentConfig:   config.AgentConfig,
+		network:       config.Network,
+		networkAllow:  networkAllow,
+		publish:       config.Publish,
+		podman:        config.Podman,
+		workspaceMode: config.WorkspaceMode,
+		landlock:      config.Landlock,
+		roBind:        roBind,
+		rwBind:        rwBind,
+		environment:   environment,
+		tty:           config.TTY,
 	}, nil
 }
 
@@ -305,7 +311,8 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		Project:                project,
 		Network:                "private",
 		Podman:                 "auto",
-		WritePolicy:            "workspace",
+		WorkspaceMode:          "write-through",
+		Landlock:               "auto",
 		TTY:                    "auto",
 		DryRun:                 cli.DryRun,
 		AllowControlFileWrites: cli.AllowControlFileWrites,
@@ -327,8 +334,11 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		if layer.podman != nil {
 			opts.Podman = *layer.podman
 		}
-		if layer.writePolicy != nil {
-			opts.WritePolicy = *layer.writePolicy
+		if layer.workspaceMode != nil {
+			opts.WorkspaceMode = *layer.workspaceMode
+		}
+		if layer.landlock != nil {
+			opts.Landlock = *layer.landlock
 		}
 		if layer.tty != nil {
 			opts.TTY = *layer.tty
@@ -353,17 +363,18 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		return Options{}, fmt.Errorf("--network-allow: %w", err)
 	}
 	apply(optionLayer{
-		instance:     cli.Instance,
-		agentConfig:  cli.AgentConfig,
-		network:      cli.Network,
-		networkAllow: cliNetworkAllow,
-		publish:      cli.Publish,
-		podman:       cli.Podman,
-		writePolicy:  cli.WritePolicy,
-		roBind:       cli.ROBind,
-		rwBind:       cli.RWBind,
-		environment:  cliEnvironment,
-		tty:          cli.TTY,
+		instance:      cli.Instance,
+		agentConfig:   cli.AgentConfig,
+		network:       cli.Network,
+		networkAllow:  cliNetworkAllow,
+		publish:       cli.Publish,
+		podman:        cli.Podman,
+		workspaceMode: cli.WorkspaceMode,
+		landlock:      cli.Landlock,
+		roBind:        cli.ROBind,
+		rwBind:        cli.RWBind,
+		environment:   cliEnvironment,
+		tty:           cli.TTY,
 	})
 	opts.NoAgentConfig = !agentConfig
 	opts.Env, opts.UnsetEnv = resolveEnvironment(environment, hostEnvironment)

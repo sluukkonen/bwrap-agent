@@ -33,7 +33,8 @@ type Options struct {
 	NetworkAllow           []string
 	Publish                []string
 	Podman                 string
-	WritePolicy            string
+	WorkspaceMode          string
+	Landlock               string
 	ROBind                 []string
 	RWBind                 []string
 	Env                    []string
@@ -48,7 +49,7 @@ type Options struct {
 // cliOptions contains the run command's options. Pointers let an omitted
 // configurable scalar be distinguished from an explicit command-line override.
 type cliOptions struct {
-	Project                *string    `name:"project" type:"path" placeholder:"PATH" help:"Expose PATH as the project directory; write access follows --write-policy (default: current directory)."`
+	Project                *string    `name:"project" type:"path" placeholder:"PATH" help:"Expose PATH as the project directory; write behavior follows --workspace-mode (default: current directory)."`
 	Instance               *string    `name:"instance" placeholder:"NAME" help:"Use this managed instance name, overriding project configuration (default: project directory name)."`
 	AgentConfig            *bool      `name:"agent-config" negatable:"" help:"Expose detected host agent configuration read-only and seed mutable credentials. Default: enabled."`
 	NoConfig               bool       `name:"no-config" help:"Do not load user or project configuration files."`
@@ -56,10 +57,11 @@ type cliOptions struct {
 	Network                *string    `name:"network" enum:"private,host,none" placeholder:"private|host|none" help:"Network mode: private (HTTP/HTTPS allowlist enforced), host (shared and unrestricted), or none (disabled). Default: private."`
 	NetworkAllow           stringList `name:"network-allow" placeholder:"ORIGIN" help:"Allow an HTTP/HTTPS origin in private mode; repeatable (for example https://registry.example.com or https://*.example.com)."`
 	Publish                stringList `name:"publish" placeholder:"[HOST_PORT:]GUEST_PORT[/tcp|udp]" help:"Publish a private-network port on host loopback; repeatable. HOST_PORT=0 chooses a free port. Requires --network=private."`
-	Podman                 *string    `name:"podman" enum:"auto,on,off" placeholder:"auto|on|off" help:"Podman mode: auto (enable if found), on (require), or off (disable). Enabled modes provide a lazy API socket. Default: auto."`
-	WritePolicy            *string    `name:"write-policy" enum:"workspace,state-only" placeholder:"workspace|state-only" help:"Host write policy: workspace (project, Git metadata, state, and --rw-bind paths) or state-only (instance state only). Default: workspace."`
+	Podman                 *string    `name:"podman" enum:"auto,on,off" placeholder:"auto|on|off" help:"Podman mode: auto (enable if compatible and found), on (require), or off (disable). Enabled modes provide a lazy API socket. Read-only workspaces and required Landlock disable auto. Default: auto."`
+	WorkspaceMode          *string    `name:"workspace-mode" enum:"write-through,copy-on-write,read-only" placeholder:"write-through|copy-on-write|read-only" help:"Workspace behavior: write-through (persist changes), copy-on-write (discard changes), or read-only. Default: write-through."`
+	Landlock               *string    `name:"landlock" enum:"auto,required,off" placeholder:"auto|required|off" help:"Landlock filesystem enforcement: auto (when compatible), required (fail closed), or off. Default: auto."`
 	ROBind                 stringList `name:"ro-bind" type:"path" placeholder:"PATH" help:"Bind an additional existing host path read-only; repeatable."`
-	RWBind                 stringList `name:"rw-bind" type:"path" placeholder:"PATH" help:"Bind an additional existing host path read-write; repeatable. Incompatible with --write-policy=state-only."`
+	RWBind                 stringList `name:"rw-bind" type:"path" placeholder:"PATH" help:"Bind an additional existing host path read-write; repeatable."`
 	Env                    stringList `name:"env" placeholder:"NAME[=VALUE]" help:"Set an environment variable, or inherit NAME from the host when VALUE is omitted; repeatable."`
 	UnsetEnv               stringList `name:"unsetenv" placeholder:"NAME" help:"Remove an environment variable from the sandbox; repeatable."`
 	TTY                    *string    `name:"tty" enum:"auto,always,never" placeholder:"auto|always|never" help:"Controlling PTY mode: auto (when stdin and stdout are terminals), always, or never. Default: auto."`
@@ -230,10 +232,19 @@ func parseExitCode(err error) int {
 
 func Main(args []string) int {
 	if len(args) > 0 && args[0] == internalInitMode {
-		return sandboxInit(args[1:])
+		return sandboxInit(args[1:], false)
+	}
+	if len(args) > 0 && args[0] == internalPodmanInitMode {
+		return sandboxInit(args[1:], true)
+	}
+	if len(args) > 0 && args[0] == internalRuntimeMode {
+		return sandboxRuntime(args[1:], true)
 	}
 	if len(args) > 0 && args[0] == internalPodmanServiceMode {
 		return podmanServiceExec()
+	}
+	if len(args) > 0 && args[0] == internalLaunchMode {
+		return launchBubblewrap(args[1:])
 	}
 	parsed, code, err := parseCLI(args, os.Stdout, os.Stderr)
 	if err != nil || code != 0 {
@@ -277,7 +288,7 @@ func Main(args []string) int {
 	}
 	var launchSignals chan os.Signal
 	var control *launchControlFiles
-	writePolicy, policyErr := resolveWritePolicy(opts.WritePolicy)
+	workspaceMode, policyErr := resolveWorkspaceMode(opts.WorkspaceMode)
 	if policyErr != nil {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", policyErr)
 		return 2
@@ -286,7 +297,7 @@ func Main(args []string) int {
 		launchSignals = make(chan os.Signal, 8)
 		signal.Notify(launchSignals, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 		defer signal.Stop(launchSignals)
-		if writePolicy == "workspace" && !opts.AllowControlFileWrites {
+		if workspaceMode == "write-through" && !opts.AllowControlFileWrites {
 			control, err = newLaunchControlFiles(identity.Project)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "bwrap-agent: prepare control-path coordination: %v\n", err)
@@ -300,7 +311,13 @@ func Main(args []string) int {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
 		return 2
 	}
-	if opts.AllowControlFileWrites && plan.WritePolicy == "workspace" {
+	if plan.Bubblewrap.Legacy {
+		fmt.Fprintf(os.Stderr, "bwrap-agent: warning: Bubblewrap %s is a temporary compatibility tier; upgrade to 0.12 or newer for the supported security boundary\n", plan.Bubblewrap.Version)
+	}
+	for _, warning := range plan.Warnings {
+		fmt.Fprintf(os.Stderr, "bwrap-agent: warning: %s\n", warning)
+	}
+	if opts.AllowControlFileWrites && plan.WorkspaceMode == "write-through" {
 		fmt.Fprintln(os.Stderr, "bwrap-agent: warning: built-in control-file write protection is disabled for this run")
 	}
 	if opts.DryRun {

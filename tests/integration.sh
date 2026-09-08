@@ -7,10 +7,36 @@ case "$binary" in
     /*) ;;
     *) binary="$PWD/${binary#./}" ;;
 esac
+port_server=${2:-./bin/bwrap-agent-integration-server}
+case "$port_server" in
+    /*) ;;
+    *) port_server="$PWD/${port_server#./}" ;;
+esac
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+fixture_root="$script_dir/fixtures"
 test_root=$(mktemp -d /tmp/bwrap-agent-integration.XXXXXX)
-trap 'rm -rf -- "$test_root"' EXIT HUP INT TERM
+background_pids=
+cleanup() {
+    for pid in $background_pids; do
+        kill "$pid" 2>/dev/null || :
+    done
+    for pid in $background_pids; do
+        wait "$pid" 2>/dev/null || :
+    done
+    if command -v podman >/dev/null 2>&1; then
+        if ! podman unshare rm -rf -- "$test_root" 2>/dev/null; then
+            rm -rf -- "$test_root" 2>/dev/null || echo "warning: could not remove $test_root" >&2
+        fi
+    else
+        rm -rf -- "$test_root" 2>/dev/null || echo "warning: could not remove $test_root" >&2
+    fi
+}
+trap cleanup EXIT HUP INT TERM
 BWRAP_AGENT_STATE_HOME="$test_root/state-home"
 export BWRAP_AGENT_STATE_HOME
+XDG_CONFIG_HOME="$test_root/xdg-config"
+export XDG_CONFIG_HOME
+mkdir "$XDG_CONFIG_HOME"
 
 config_create_project="$test_root/config-create"
 mkdir "$config_create_project"
@@ -22,6 +48,10 @@ mkdir "$config_create_project"
         exit 1
     fi
 )
+
+default_project="$test_root/default-project"
+mkdir "$default_project"
+cd "$default_project"
 
 managed_home="$test_root/managed-home"
 managed_project="$test_root/managed-project"
@@ -55,6 +85,45 @@ test "$(BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list --json)" 
     --network private \
     --tty never \
     /bin/sh -ec 'test -r /etc/resolv.conf; printf "private-ok\n"'
+
+private_port_one="$test_root/private-port-one"
+private_port_two="$test_root/private-port-two"
+mkdir "$private_port_one" "$private_port_two"
+private_output_one="$test_root/private-port-one.log"
+private_output_two="$test_root/private-port-two.log"
+"$binary" \
+    run --project "$private_port_one" --instance integration-private-port-one --podman off \
+    --network private --tty never \
+    "$port_server" \
+    >"$private_output_one" 2>&1 &
+private_pid_one=$!
+background_pids="$background_pids $private_pid_one"
+"$binary" \
+    run --project "$private_port_two" --instance integration-private-port-two --podman off \
+    --network private --tty never \
+    "$port_server" \
+    >"$private_output_two" 2>&1 &
+private_pid_two=$!
+background_pids="$background_pids $private_pid_two"
+attempt=0
+while :; do
+    if grep -q '^ready$' "$private_output_one" && grep -q '^ready$' "$private_output_two"; then
+        break
+    fi
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 100 ]; then
+        cat "$private_output_one" "$private_output_two" >&2
+        exit 1
+    fi
+    kill -0 "$private_pid_one"
+    kill -0 "$private_pid_two"
+    sleep 0.05
+done
+kill "$private_pid_one" "$private_pid_two"
+wait "$private_pid_one" 2>/dev/null || :
+wait "$private_pid_two" 2>/dev/null || :
+background_pids=
+printf 'concurrent-private-ports-ok\n'
 
 config_home="$test_root/config-home"
 config_project="$test_root/config-project"
@@ -229,6 +298,16 @@ PATH="$test_root/path-without-podman" "$binary" \
     --tty never \
     /bin/sh -ec 'test "${BWRAP_AGENT_PODMAN:-}" = 0; test -z "${DOCKER_HOST:-}"; printf "auto-without-podman-ok\n"'
 
+"$binary" \
+    run \
+    --instance integration-landlock-off-environment \
+    --podman off \
+    --landlock off \
+    --env BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES=invalid \
+    --network host \
+    --tty never \
+    /bin/sh -ec 'test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"; printf "landlock-off-environment-ok\n"'
+
 readonly_repository="$test_root/read-only-repository"
 readonly_project="$test_root/read-only-worktree"
 git init -q "$readonly_repository"
@@ -242,51 +321,55 @@ git -C "$readonly_repository" worktree add -q --detach "$readonly_project" HEAD
 "$binary" \
     run \
     --project "$readonly_project" \
-    --instance integration-state-only \
-    --write-policy state-only \
+    --instance integration-read-only \
+    --workspace-mode read-only \
     --podman off \
     --network host \
     --tty never \
     /bin/sh -ec '
         test "$GIT_OPTIONAL_LOCKS" = 0
+        test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"
+        if unshare --user --map-root-user /bin/true 2>/dev/null; then exit 1; fi
         git status --porcelain >/dev/null
         if (printf changed >"$PWD/write-probe") 2>/dev/null; then exit 1; fi
         test "$(cat tracked)" = unchanged
         printf state >"$HOME/state-probe"
         printf temporary >/tmp/temporary-probe
         test "$(cat /tmp/temporary-probe)" = temporary
-        printf "state-only-ok\n"
+        printf "read-only-ok\n"
     '
 test ! -e "$readonly_project/write-probe"
-test -e "$BWRAP_AGENT_STATE_HOME/instances/integration-state-only/state/home/state-probe"
+test -e "$BWRAP_AGENT_STATE_HOME/instances/integration-read-only/state/home/state-probe"
 
 "$binary" \
     run \
     --project "$readonly_project" \
-    --instance integration-state-only-podman \
-    --write-policy state-only \
+    --instance integration-read-only-podman \
+    --workspace-mode read-only \
     --network host \
     --tty never \
     /bin/sh -ec '
-        podman info >/dev/null
-        socket=${DOCKER_HOST#unix://}
-        test "$(curl --silent --show-error --unix-socket "$socket" http://d/_ping)" = OK
-        printf "state-only-podman-ok\n"
+        test "$BWRAP_AGENT_PODMAN" = 0
+        test -z "${DOCKER_HOST:-}"
+        if podman info >/dev/null 2>&1; then exit 1; fi
+        printf "read-only-podman-disabled-ok\n"
     '
 
 "$binary" \
     run \
     --instance integration-podman \
+	--unsetenv BWRAP_AGENT_PODMAN \
+	--env BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES=invalid \
     --network host \
     --tty never \
-    /bin/sh -ec 'test -n "$DOCKER_HOST"; test -z "${CONTAINER_HOST:-}"; test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; ! pgrep -x podman >/dev/null; podman info >/dev/null; ! pgrep -x podman >/dev/null; printf "podman-ok\n"'
+	/bin/sh -ec 'test "$BWRAP_AGENT_PODMAN" = 1; test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"; test -n "$DOCKER_HOST"; test -z "${CONTAINER_HOST:-}"; test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; ! pgrep -x podman >/dev/null; podman info >/dev/null; ! pgrep -x podman >/dev/null; printf "podman-ok\n"'
 
 "$binary" \
     run \
     --instance integration-socket \
     --network host \
     --tty never \
-    /bin/sh -ec 'socket=${DOCKER_HOST#unix://}; test -S "$socket"; ! pgrep -x podman >/dev/null; result=$(curl --silent --show-error --unix-socket "$socket" http://d/_ping); test "$result" = OK; pgrep -x podman >/dev/null; printf "socket-ok\n"'
+    /bin/sh -ec 'socket=${DOCKER_HOST#unix://}; test -S "$socket"; ! pgrep -x podman >/dev/null; result=$(curl --silent --show-error --unix-socket "$socket" http://d/_ping); test "$result" = OK; version=$(curl --silent --show-error --unix-socket "$socket" http://d/version); printf %s "$version" | grep -q '"ApiVersion"'; pgrep -x podman >/dev/null; printf "docker-api-ok\n"'
 
 if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     "$binary" \
@@ -306,15 +389,116 @@ if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
         run \
         --project "$readonly_project" \
         --instance integration-containers \
-        --write-policy state-only \
+        --workspace-mode copy-on-write \
         --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" \
         --network host \
         --tty never \
         /bin/sh -ec '
-            if podman run --rm --user 0:0 -v "$PWD:/workspace:rw" "$BWRAP_AGENT_TEST_IMAGE" /bin/sh -ec '\''touch /workspace/container-write-probe'\''; then
-                exit 1
-            fi
-            test ! -e "$PWD/container-write-probe"
-            printf "container-read-only-ok\n"
+            podman run --rm --user 0:0 -v "$PWD:/workspace:rw" "$BWRAP_AGENT_TEST_IMAGE" /bin/sh -ec '\''touch /workspace/container-write-probe'\''
+            test -e "$PWD/container-write-probe"
+            printf "container-copy-on-write-ok\n"
         '
+    test ! -e "$readonly_project/container-write-probe"
+
+    protected_config_before=$(cat "$protected_project/.git/config")
+    "$binary" \
+        run \
+        --project "$protected_project" \
+        --instance integration-protected-podman \
+		--env BWRAP_AGENT_PODMAN=0 \
+        --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" \
+        --network host \
+        --tty never \
+        /bin/sh -ec '
+			test "$BWRAP_AGENT_PODMAN" = 1
+			if chmod u+w /run/bwrap-agent/init 2>/tmp/init-chmod-error; then exit 1; fi
+			if printf replaced >/run/bwrap-agent/init 2>/tmp/init-write-error; then exit 1; fi
+			if mv /run/bwrap-agent/init /run/bwrap-agent/init.replaced 2>/tmp/init-rename-error; then exit 1; fi
+            printf agent-write-through >ordinary-agent-output
+            if (printf direct-change >.git/config) 2>/tmp/direct-write-error; then exit 1; fi
+            if umount .git/config 2>/tmp/direct-unmount-error; then exit 1; fi
+            mkdir /tmp/ancestor-bind
+            if mount --bind "$PWD" /tmp/ancestor-bind 2>/tmp/ancestor-bind-error; then exit 1; fi
+            podman run --rm --privileged -v "$PWD:/workspace:rw" "$BWRAP_AGENT_TEST_IMAGE" /bin/sh -ec '\''
+                printf container-write-through >/workspace/ordinary-container-output
+                if (printf container-change >/workspace/.git/config) 2>/tmp/write-error; then exit 8; fi
+                if umount /workspace/.git/config 2>/tmp/unmount-error; then exit 9; fi
+            '\''
+            test "$(cat .git/config)" != container-change
+        '
+    test "$(cat "$protected_project/.git/config")" = "$protected_config_before"
+    test "$(cat "$protected_project/ordinary-agent-output")" = agent-write-through
+    test "$(cat "$protected_project/ordinary-container-output")" = container-write-through
+
+    readonly_exposure="$test_root/readonly-exposure"
+    printf 'host-read-only\n' >"$readonly_exposure"
+    "$binary" \
+        run \
+        --project "$readonly_project" \
+        --instance integration-readonly-bind-podman \
+        --ro-bind "$readonly_exposure" \
+        --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" \
+        --network host \
+        --tty never \
+        /bin/sh -ec '
+            if podman run --rm -v "$1:/target:rw" "$BWRAP_AGENT_TEST_IMAGE" /bin/sh -ec '\''printf container-change >/target'\''; then exit 1; fi
+            test "$(cat "$1")" = host-read-only
+        ' sh "$readonly_exposure"
+    test "$(cat "$readonly_exposure")" = host-read-only
+
+    printf '%s\n' \
+        '#!/bin/sh' \
+        'set -eu' \
+		'! podman run --rm -v "$XDG_CONFIG_HOME/opencode:/config:rw" "$BWRAP_AGENT_TEST_IMAGE" /bin/sh -ec "printf container-change >/config/live-value"' \
+        'test "$(cat "$XDG_CONFIG_HOME/opencode/live-value")" = host-agent-config' \
+        >"$agent_bins/opencode"
+    chmod +x "$agent_bins/opencode"
+    printf 'host-agent-config\n' >"$agent_config/opencode/live-value"
+    HOME="$agent_home" XDG_CONFIG_HOME="$agent_config" XDG_DATA_HOME="$agent_data" "$binary" \
+        run --project "$config_project" --instance integration-opencode-podman \
+        --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" --network host --tty never \
+        "$agent_bins/opencode"
+    test "$(cat "$agent_config/opencode/live-value")" = host-agent-config
+    printf 'podman-read-only-exposures-ok\n'
+
+    "$binary" \
+        run \
+        --project "$readonly_project" \
+        --instance integration-containers \
+        --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" \
+        --network host \
+        --tty never \
+        /bin/sh -ec '
+            volume=integration-volume
+            podman volume create "$volume" >/dev/null
+            podman run --rm -v "$volume:/data" "$BWRAP_AGENT_TEST_IMAGE" /bin/sh -ec '\''printf volume-ok >/data/result'\''
+            test "$(podman run --rm -v "$volume:/data:ro" "$BWRAP_AGENT_TEST_IMAGE" cat /data/result)" = volume-ok
+            podman volume rm "$volume" >/dev/null
+
+            mkdir build-context
+            printf "FROM %s\\nRUN printf build-ok >/build-result\\nCMD [\\\"/bin/cat\\\", \\\"/build-result\\\"]\\n" "$BWRAP_AGENT_TEST_IMAGE" >build-context/Containerfile
+            podman build --tag bwrap-agent-integration-build build-context >/dev/null
+            test "$(podman run --rm bwrap-agent-integration-build)" = build-ok
+            podman image rm bwrap-agent-integration-build >/dev/null
+            printf "podman-volumes-builds-ok\\n"
+        '
+
+    compose_project="$test_root/compose-project"
+    mkdir "$compose_project"
+    cp "$fixture_root/compose-root-and-user.yml" "$compose_project/compose.yml"
+    printf 'compose fixture\n' >"$compose_project/README.md"
+    # The non-root container must be able to traverse this disposable bind source.
+    chmod 711 "$test_root"
+    chmod 755 "$compose_project"
+    compose_output=$("$binary" \
+        run \
+        --project "$compose_project" \
+        --instance integration-compose \
+        --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" \
+        --network host \
+        --tty never \
+        podman-compose -f compose.yml up --abort-on-container-exit --exit-code-from root 2>&1)
+    printf '%s\n' "$compose_output" | grep -q compose-root-ok
+    printf '%s\n' "$compose_output" | grep -q compose-nonroot-ok
+    printf 'compose-ok\n'
 fi

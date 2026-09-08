@@ -1,12 +1,12 @@
 # bwrap-agent
 
-`bwrap-agent` runs an AI coding agent with the host's normal development tools while hiding the user's home directory. By default, only the selected project, sandbox state, and (when needed) Git worktree metadata are writable.
+`bwrap-agent` runs an AI coding agent with the host's normal development tools while hiding the user's home directory. By default, project changes write through to the host, while only managed instance state and explicit read-write binds add other writable host paths.
 
 This is an early Linux-only implementation. Its default container design is intentionally different from mounting the host Podman socket: the launcher enters a dedicated rootless Podman user namespace first, then applies network isolation and bubblewrap. Podman and its lazily activated API service run *inside* that boundary, so a malicious `podman run -v /:/host` can only see the synthetic sandbox root.
 
 ## Quick start
 
-Runtime requirements are bubblewrap, pasta, and optionally Podman. Rootless Podman must be configured for the user with subordinate UID/GID ranges. Building from source requires Go 1.24 or newer.
+Runtime requirements are non-setuid bubblewrap 0.11 or newer, pasta, and optionally Podman. Bubblewrap 0.12 or newer is recommended; 0.11 is accepted as a temporary compatibility tier with a launch warning. Rootless Podman must be configured for the user with subordinate UID/GID ranges. Building from source requires Go 1.24 or newer.
 
 ```console
 $ make build
@@ -28,11 +28,11 @@ $ ./bin/bwrap-agent run --project . bash
 
 The `run` command requires a program; there is no implicit default agent. The launcher currently detects OpenCode and Pi by executable basename. Their user-managed host configuration, extensions, skills, and packages are exposed read-only, so host edits are visible on the next launch without letting the sandbox rewrite them. Credentials and mutable runtime data remain writable, persistent, and isolated per instance. Use `--no-agent-config` to suppress new host configuration exposure and credential seeding; it never deletes data already stored in an instance.
 
-In the default `workspace` policy, high-impact project control paths are read-only for every target program: `.bwrap-agent.toml`; Git configuration, hooks, and linked-worktree metadata; OpenCode project configuration, plugins, and tools; and Pi project settings, extensions, and package directories. Missing paths receive neutral read-only placeholders, preventing an agent from creating them. Prompts, skills, themes, commands, agent definitions, `.mcp.json`, and ordinary source files remain writable. This is defense in depth around conventional paths, not a complete executable-content policy.
+In the default `write-through` workspace mode, high-impact project control paths are read-only for every target program: `.bwrap-agent.toml`; Git configuration, hooks, and linked-worktree metadata; OpenCode project configuration, plugins, and tools; and Pi project settings, extensions, and package directories. Missing paths receive neutral read-only placeholders, preventing an agent from creating them. Prompts, skills, themes, commands, agent definitions, `.mcp.json`, and ordinary source files remain writable. This is defense in depth around conventional paths, not a complete executable-content policy.
 
 For OpenCode, `$XDG_CONFIG_HOME/opencode` is mounted read-only while `$XDG_DATA_HOME/opencode`, including a seed-once copy of `auth.json`, remains instance-local. Host `OPENCODE_CONFIG`, `OPENCODE_TUI_CONFIG`, and `OPENCODE_CONFIG_DIR` path overrides are mapped to read-only sandbox paths. Other OpenCode environment settings still require an explicit `--env` or `[env]` entry.
 
-For Pi, the host directory selected by `PI_CODING_AGENT_DIR` (normally `~/.pi/agent`) is presented as a layered view. Configuration and resources are read-only; `auth.json`, `trust.json`, `models-store.json`, and sessions are seed-once or instance-local writable state. Host `~/.agents/skills` is also exposed read-only. Pi's documented terminal overrides are forwarded automatically. Global `/settings`, model-save, and package-management operations may fail because their host-owned targets are read-only; make those changes with host Pi. Project-local Pi changes still follow the selected workspace write policy.
+For Pi, the host directory selected by `PI_CODING_AGENT_DIR` (normally `~/.pi/agent`) is presented as a layered view. Configuration and resources are read-only; `auth.json`, `trust.json`, `models-store.json`, and sessions are seed-once or instance-local writable state. Host `~/.agents/skills` is also exposed read-only. Pi's documented terminal overrides are forwarded automatically. Global `/settings`, model-save, and package-management operations may fail because their host-owned targets are read-only; make those changes with host Pi. Project-local Pi changes follow the selected workspace mode.
 
 Configuration references to arbitrary files outside an agent's configuration tree are not exposed automatically. Add a deliberate `--ro-bind` and ensure the configured sandbox path resolves to that mount when such a reference is required.
 
@@ -87,7 +87,8 @@ agent_config = true
 network = "private"
 network_allow = ["https://registry.example.com", "https://*.packages.example.com"]
 podman = "auto"
-write_policy = "workspace"
+workspace_mode = "write-through"
+landlock = "auto"
 tty = "auto"
 
 publish = ["13000:3000"]
@@ -107,15 +108,19 @@ Scalar settings are replaced by higher-precedence layers. `instance` is accepted
 
 `project`, the target command, and action/recovery options are intentionally not accepted in TOML. Use `run --dry-run` to inspect the effective launch plan and the user/project config files that were loaded.
 
-For an exceptional trusted workflow that must edit the built-in control paths, use the CLI-only `run --allow-control-file-writes` escape hatch. It disables the complete built-in control-path policy and prints a warning under `workspace`; it has no additional effect under `state-only`. It also permits loading a symlinked project configuration, so use it only after reviewing the checkout. The escape hatch is deliberately unavailable in TOML.
+For an exceptional trusted workflow that must edit the built-in control paths, use the CLI-only `run --allow-control-file-writes` escape hatch. It disables the complete built-in control-path policy and prints a warning in `write-through`; it has no additional effect in the other workspace modes. It also permits loading a symlinked project configuration, so use it only after reviewing the checkout. The escape hatch is deliberately unavailable in TOML.
 
-For inspection or verification without allowing project changes, use the `state-only` write policy:
+Workspace behavior is independent of persistent instance state. For a writable view whose changes are discarded at exit, use `copy-on-write`:
 
 ```console
-$ ./bin/bwrap-agent run --write-policy state-only --project . opencode
+$ ./bin/bwrap-agent run --workspace-mode copy-on-write --project . opencode
 ```
 
-The project and linked-worktree Git metadata are then read-only. Sandbox-managed state remains writable and persistent so agents can retain sessions and credentials, development tools can cache dependencies, and Podman can store images and container layers. Private temporary filesystems also remain writable. `--rw-bind` is rejected in this mode. A future ephemeral-state option can provide disposable writable state as a separate lifetime policy.
+The project and linked-worktree Git metadata are temporary overlays. This is useful for destructive builds and tests without persistent workspace damage. On SELinux hosts, nested per-container labeling is disabled in this mode because the private overlay cannot be relabeled; the outer bwrap-agent process remains confined. Use `read-only` when writes must fail; automatic Podman integration is disabled in that mode, and explicit `--podman=on` is rejected. Explicit `--rw-bind` paths remain deliberate writable exceptions in every mode.
+
+With Podman enabled, the launcher creates the Bubblewrap mount hierarchy in the outer rootless Podman user namespace, then runs the agent and Podman in a less-privileged child user/mount namespace with the same subordinate-ID range. Linux locks the inherited mounts as one unit: ordinary workspace writes still reach the host immediately, while even privileged containers cannot detach read-only control paths or reveal their underlying files. This also preserves direct read-only binds of Unix sockets and filesystems that cannot be OverlayFS lower layers.
+
+Landlock filesystem enforcement defaults to `auto`. It is applied when Podman is disabled and a sufficiently recent kernel is available. `--landlock required` disables automatic Podman and fails closed unless Landlock ABI 3 or newer is usable; `--landlock off` is available for compatibility diagnostics. Instance state and private temporary filesystems remain writable and persistent in all workspace modes.
 
 ## Networking and ports
 
@@ -150,7 +155,7 @@ $ ./bin/bwrap-agent run --publish 0:3000 opencode
 
 ## Podman and Testcontainers
 
-When Podman is available, the local Podman CLI and Podman Compose work normally and a sandbox-local API socket is provided automatically. All containers in an instance are stopped when its agent exits. Override detection with `--podman on` or disable the integration with `--podman off`.
+When Podman is available, the local Podman CLI and Podman Compose work normally and a sandbox-local API socket is provided automatically. Protected `write-through` remains the default, so ordinary project and container writes persist immediately. All containers in an instance are stopped when its agent exits. Require Podman with `--podman on` or disable the integration with `--podman off`.
 
 Docker-compatible clients and Testcontainers use the socket automatically:
 
@@ -190,14 +195,16 @@ Do not bind the host Podman socket into this sandbox. Podman's API is deliberate
 --unsetenv NAME           remove an environment variable
 --tty auto|always|never   isolated controlling PTY policy (default: auto)
 --podman auto|on|off      detect Podman, require it, or disable it (default: auto)
---write-policy workspace|state-only
-                           allow workspace writes (default), or only instance-state writes
+--workspace-mode write-through|copy-on-write|read-only
+                           persist, discard, or reject workspace writes
+--landlock auto|required|off
+                           select filesystem enforcement (default: auto)
 --[no-]agent-config        expose detected host agent config read-only and seed credentials
 --no-project-config       skip .bwrap-agent.toml
 --no-config               skip user and project configuration
 ```
 
-The launcher clears the inherited environment. It keeps terminal and locale settings, but credentials, SSH agent sockets, cloud variables, and tokens are not forwarded unless explicitly requested with `--env NAME` or an `{ inherit = true }` config entry.
+The launcher clears the inherited environment. It keeps terminal and locale settings, but credentials, SSH agent sockets, cloud variables, and tokens are not forwarded unless explicitly requested with `--env NAME` or an `{ inherit = true }` config entry. `BWRAP_AGENT_PODMAN` is launcher-owned and always reports the resolved integration state as `0` or `1`; environment configuration cannot redefine or remove it.
 
 ### Terminal multiplexers
 
@@ -221,11 +228,14 @@ $ make test
 $ make test-race
 $ make vet
 $ make integration
+$ make integration-testcontainers
 $ make dist
 $ ./bin/bwrap-agent run --podman off --network host --dry-run /usr/bin/id
 ```
 
-Set `BWRAP_AGENT_TEST_IMAGE` to an Alpine-compatible image available from the test environment to include root and non-root container execution in `make integration`.
+Set `BWRAP_AGENT_TEST_IMAGE` to an Alpine-compatible image available from the test environment to include Podman root/non-root execution, volumes, builds, and Compose in `make integration`. The regular suite also verifies Docker-compatible API socket activation and concurrent private sandboxes binding the same guest port.
+
+`make integration-testcontainers` runs the available Go, Node, Python, and Java Testcontainers clients against the sandbox-local Podman socket. It defaults to `docker.io/library/alpine:3.22`; override `BWRAP_AGENT_TEST_IMAGE` for an internal mirror, an air-gapped image store, or another Alpine-compatible image. It installs pinned test dependencies in disposable sandbox state, so it intentionally requires package-registry access or appropriately populated caches. The default `all` selection reports and skips client languages whose host toolchain is absent. An explicit selection such as `BWRAP_AGENT_TESTCONTAINERS=go,python` fails if either selected toolchain is unavailable. Testcontainers' Ryuk sidecar is disabled because this launcher already stops all instance containers at exit.
 
 The launcher is a CGO-free Go executable. Standard Go modules are used through `go.mod` and `go.sum`; dependencies are not vendored.
 

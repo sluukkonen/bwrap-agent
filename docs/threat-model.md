@@ -2,7 +2,7 @@
 
 ## Protected assets
 
-The boundary is intended to protect hidden host files, other agent processes, host process and IPC namespaces, and host network port ownership. The `state-only` policy additionally protects the selected project and its Git metadata from writes. Container bind mounts remain constrained by the same filesystem view.
+The boundary is intended to protect hidden host files, other agent processes, host process and IPC namespaces, and host network port ownership. Workspace modes decide whether project and Git changes write through, go to a disposable overlay, or are rejected. With Podman enabled, protected nested mounts are inherited into a less-privileged child user namespace, causing the kernel to lock them together with their ancestors against remounting or detachment by the agent and its containers.
 
 ## Assumptions
 
@@ -10,17 +10,17 @@ The boundary is intended to protect hidden host files, other agent processes, ho
 - Unprivileged user namespaces are enabled and the user has non-overlapping `/etc/subuid` and `/etc/subgid` ranges.
 - The agent runs as the invoking user, not through setuid or rootful Podman.
 - UID 0 displayed inside the launcher or a container is namespaced and maps back to the invoking unprivileged host user.
-- Under the default `workspace` write policy, the project itself is untrusted and disposable. A malicious agent can delete or rewrite it.
+- Under the default `write-through` workspace mode, the project itself is untrusted and disposable. A malicious agent can delete or rewrite it.
 - The per-instance state is also writable and untrusted. Do not store unrelated secrets there.
 - Agent credentials are copied into writable per-instance state. A compromised agent can read or corrupt every credential seeded into its own instance; project ownership prevents that state from being reused by another canonical project.
 - Network peers are potentially hostile unless the environment is genuinely air-gapped.
 
 ## Deliberate exposures
 
-- Host operating-system files under `/usr`, `/etc`, `/sys`, and optional tool stores are readable. `/etc` can contain operational metadata; deployments needing confidentiality should replace it with an allowlist.
-- The default `workspace` policy grants write access to validated external Git metadata, including refs and metadata shared by linked worktrees.
-- In `workspace`, conventional Git and supported-agent control surfaces are overlaid read-only, including paths that do not yet exist. This reduces persistence through hooks, configuration, plugins, and tools while leaving ordinary project content writable. `run --allow-control-file-writes` deliberately disables this protection for the run.
-- Explicit `run --rw-bind` paths are fully writable and are therefore rejected by `state-only`.
+- Host operating-system files under `/usr`, `/etc`, `/sys`, and optional tool stores are readable. Podman-enabled runs bind the outer rootless namespace's sysfs view writable for privileged-container compatibility, but the agent's child user namespace has no capabilities in the namespace that owns that sysfs mount. `/etc` can contain operational metadata; deployments needing confidentiality should replace it with an allowlist.
+- The default `write-through` mode grants write access to validated external Git metadata, including refs and metadata shared by linked worktrees.
+- In `write-through`, conventional Git and supported-agent control surfaces are exposed read-only, including paths that do not yet exist. With Podman enabled, a less-privileged child user/mount namespace kernel-locks those mounts to their ancestors, preventing direct and privileged-container mount operations from revealing the underlying controls. `run --allow-control-file-writes` deliberately disables this protection for the run.
+- Explicit `run --rw-bind` paths are fully writable exceptions in every workspace mode.
 - Project-local `.bwrap-agent.toml` is fully trusted and evaluated by the host launcher before sandbox creation. It can request arbitrary read-only or read-write binds, select host networking, copy explicitly named host environment variables into the sandbox, and select an instance name owned by that canonical project. Cross-project instance reuse is rejected. Use `run --no-project-config` for untrusted checkouts.
 - Recognized host agent configuration and executable resources are exposed read-only. Path overrides and automatically discovered sources are rejected if a sandbox-writable path could retarget them, but the configuration itself is trusted and may execute plugins or refer to deliberately exposed resources.
 - External Git metadata is exposed only after its worktree backlink or `core.worktree` association has been validated. Malformed and unrelated `.git` pointers abort launch.
@@ -34,8 +34,11 @@ The Podman API grants the socket holder full Podman functionality. An agent coul
 
 ## Known gaps in the prototype
 
-- No seccomp policy, Landlock layer, resource quotas, audit log, or verified host-policy file yet.
-- `/etc` and `/sys` are broad read-only mounts.
+- No seccomp policy, resource quotas, audit log, or verified host-policy file yet.
+- Bubblewrap 0.11 is a warned compatibility tier affected by an upstream setup-time path-resolution vulnerability. The launcher orders destination creation before untrusted mounts and rejects setuid builds, but Bubblewrap 0.12 or newer is required for the supported security tier.
+- Podman-enabled launches require creation of a second user/mount namespace with an identity mapping of the outer rootless namespace. Failure is fatal rather than silently weakening mount protection.
+- `copy-on-write` with Podman disables nested per-container SELinux labeling because Bubblewrap's private temporary overlay cannot be relabeled. The outer bwrap-agent process retains its host SELinux confinement.
+- `/etc` and `/sys` remain broad host views. `/sys` is read-only without Podman; with Podman it is writable in the outer rootless namespace so privileged containers can initialize, while the sandbox and containers run in a child namespace that lacks capabilities over that mount.
 - Automatic host port allocation has a race.
 - Concurrent use of one instance is rejected by an exclusive host-side lock; separate agents need separate worktrees or instance names.
 - Managed instances can be listed and deleted explicitly, but automatic age-based pruning and component-specific reset are not implemented.

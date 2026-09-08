@@ -9,7 +9,11 @@ import (
 )
 
 const internalInitMode = "__bwrap_agent_sandbox_init"
+const internalPodmanInitMode = "__bwrap_agent_podman_sandbox_init"
+const internalRuntimeMode = "__bwrap_agent_sandbox_runtime"
 const internalPodmanServiceMode = "__bwrap_agent_podman_service"
+const internalLaunchMode = "__bwrap_agent_launch_bubblewrap"
+const internalLandlockEnvironment = "BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES"
 
 type PortMapping struct {
 	Protocol string `json:"protocol"`
@@ -26,11 +30,14 @@ type LaunchPlan struct {
 	Instance       string
 	Project        string
 	State          string
-	WritePolicy    string
+	WorkspaceMode  string
+	Landlock       LandlockStatus
+	Bubblewrap     BubblewrapStatus
 	NetworkAllow   []string
 	ProxyGuestPort int
 	Command        []string
 	Outer          []string
+	Launcher       []string
 	Bwrap          []string
 	Ports          []PortMapping
 	LaunchEnv      map[string]string
@@ -38,11 +45,24 @@ type LaunchPlan struct {
 	ConfigFiles    []ConfigSource
 	ProtectedPaths []string
 	ControlCleanup []controlCleanup
+	Warnings       []string
+}
+
+type LandlockStatus struct {
+	Requested string `json:"requested"`
+	Effective string `json:"effective"`
+	ABI       int    `json:"abi,omitempty"`
+}
+
+type BubblewrapStatus struct {
+	Version string `json:"version"`
+	Legacy  bool   `json:"legacy"`
 }
 
 func (p LaunchPlan) Argv() []string {
-	argv := make([]string, 0, len(p.Outer)+len(p.Bwrap))
+	argv := make([]string, 0, len(p.Outer)+len(p.Launcher)+len(p.Bwrap))
 	argv = append(argv, p.Outer...)
+	argv = append(argv, p.Launcher...)
 	argv = append(argv, p.Bwrap...)
 	return argv
 }
@@ -76,7 +96,9 @@ func writePlanJSON(w io.Writer, p LaunchPlan) error {
 		Instance       string            `json:"instance"`
 		Project        string            `json:"project"`
 		State          string            `json:"state"`
-		WritePolicy    string            `json:"write_policy"`
+		WorkspaceMode  string            `json:"workspace_mode"`
+		Landlock       LandlockStatus    `json:"landlock"`
+		Bubblewrap     BubblewrapStatus  `json:"bubblewrap"`
 		NetworkAllow   []string          `json:"network_allow"`
 		ProxyGuestPort int               `json:"proxy_guest_port,omitempty"`
 		Command        []string          `json:"command"`
@@ -85,12 +107,15 @@ func writePlanJSON(w io.Writer, p LaunchPlan) error {
 		TTY            bool              `json:"tty"`
 		ConfigFiles    []ConfigSource    `json:"config_files"`
 		ProtectedPaths []string          `json:"protected_paths"`
+		Warnings       []string          `json:"warnings,omitempty"`
 		Argv           []string          `json:"argv"`
 	}{
-		Instance: p.Instance, Project: p.Project, State: p.State, WritePolicy: p.WritePolicy,
+		Instance: p.Instance, Project: p.Project, State: p.State, WorkspaceMode: p.WorkspaceMode,
+		Landlock: p.Landlock, Bubblewrap: p.Bubblewrap,
 		NetworkAllow: append([]string{}, p.NetworkAllow...), ProxyGuestPort: p.ProxyGuestPort,
 		Command: p.Command, Ports: p.Ports, Environment: p.LaunchEnv, TTY: p.TTY,
-		ConfigFiles: configFiles, ProtectedPaths: append([]string{}, p.ProtectedPaths...), Argv: p.Argv(),
+		ConfigFiles: configFiles, ProtectedPaths: append([]string{}, p.ProtectedPaths...),
+		Warnings: append([]string{}, p.Warnings...), Argv: p.Argv(),
 	}
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
