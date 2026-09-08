@@ -3,9 +3,12 @@ package app
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -181,7 +184,7 @@ func TestCLIParsingAndPassthrough(t *testing.T) {
 }
 
 func TestCLIRejectsInvalidInputs(t *testing.T) {
-	for _, args := range [][]string{{"--"}, {"opencode"}, {"--init-config"}, {"config"}, {"run"}, {"run", "--podman", "invalid", "/bin/true"}, {"run", "--write-policy", "invalid", "/bin/true"}, {"run", "--no-podman", "/bin/true"}, {"run", "--podman-socket", "/bin/true"}, {"run", "--no-git-common-dir", "/bin/true"}} {
+	for _, args := range [][]string{{"--"}, {"opencode"}, {"--init-config"}, {"config"}, {"run"}, {"run", "--podman", "invalid", "/bin/true"}, {"run", "--write-policy", "invalid", "/bin/true"}, {"run", "--network-allow", "ssh://example.com", "/bin/true"}, {"run", "--network", "host", "--network-allow", "https://example.com", "/bin/true"}, {"run", "--no-podman", "/bin/true"}, {"run", "--podman-socket", "/bin/true"}, {"run", "--no-git-common-dir", "/bin/true"}} {
 		var stdout, stderr bytes.Buffer
 		_, code, err := parseOptions(args, &stdout, &stderr)
 		if err == nil || code != 2 {
@@ -223,11 +226,12 @@ func TestHelpIsHandledWithoutBuildingPlan(t *testing.T) {
 		"--no-config",
 		"--no-project-config",
 		"--network=private|host|none",
+		"--network-allow=ORIGIN",
 		"--podman=auto|on|off",
 		"--write-policy=workspace|state-only",
 		"--allow-control-file-writes",
 		"--tty=auto|always|never",
-		"private (isolated via pasta), host (shared), or none (disabled)",
+		"private (HTTP/HTTPS allowlist enforced), host (shared and unrestricted), or none (disabled)",
 		"auto (enable if found), on (require), or off (disable)",
 		"auto (when stdin and stdout are terminals), always, or never",
 		"HOST_PORT=0 chooses a free port",
@@ -455,6 +459,30 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if !strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--setenv\x00XDG_RUNTIME_DIR\x00/run/bwrap-agent/runtime") {
 		t.Fatalf("sandbox runtime directory is not private and short: %#v", plan.Bwrap)
 	}
+	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "config", "containers", "containers.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(containersConfig, []byte("host.containers.internal")) {
+		t.Fatalf("host-network Podman config unexpectedly contains private proxy settings: %s", containersConfig)
+	}
+}
+
+func TestPrivatePodmanPlanConfiguresContainerProxyRoute(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	plan, err := BuildPlan(Options{Project: ".", Instance: "private-podman-plan", Network: "private", Podman: "on", TTY: "never", Command: []string{"/bin/true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "config", "containers", "containers.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"http_proxy = false", "host.containers.internal:65532", "--map-host-loopback", "169.254.1.2"} {
+		if !bytes.Contains(containersConfig, []byte(expected)) {
+			t.Errorf("private Podman config lacks %q: %s", expected, containersConfig)
+		}
+	}
 }
 
 func TestResolvePodmanModes(t *testing.T) {
@@ -495,7 +523,7 @@ func TestStateHomeSymlinkIsResolved(t *testing.T) {
 
 func TestPrivatePortsBindHostLoopback(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	plan, err := BuildPlan(Options{Project: ".", Instance: "port-test", Network: "private", Podman: "off", TTY: "never", Publish: []string{"18080:8080", "15432:5432/udp"}, Command: []string{"/bin/true"}})
+	plan, err := BuildPlan(Options{Project: ".", Instance: "port-test", Network: "private", NetworkAllow: []string{"https://registry.example"}, Podman: "off", TTY: "never", Publish: []string{"18080:8080", "15432:5432/udp"}, Command: []string{"/bin/true"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,5 +532,37 @@ func TestPrivatePortsBindHostLoopback(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Errorf("missing %q in %#v", expected, plan.Outer)
 		}
+	}
+	for _, expected := range []string{"--splice-only", strconv.Itoa(proxyGuestPort) + ":" + proxyPortPlaceholder} {
+		if !strings.Contains(joined, expected) {
+			t.Errorf("missing %q in %#v", expected, plan.Outer)
+		}
+	}
+	if strings.Contains(joined, "--host-lo-to-ns-lo") || strings.Contains(joined, "--dns-forward") {
+		t.Fatalf("private plan exposes unintended host networking: %#v", plan.Outer)
+	}
+	proxyURL := fmt.Sprintf("http://127.0.0.1:%d", proxyGuestPort)
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		if plan.LaunchEnv[name] != proxyURL {
+			t.Errorf("%s = %q, want %q", name, plan.LaunchEnv[name], proxyURL)
+		}
+	}
+	if plan.ProxyGuestPort != proxyGuestPort || !reflect.DeepEqual(plan.NetworkAllow, []string{"https://registry.example"}) {
+		t.Fatalf("private policy metadata = %#v", plan)
+	}
+}
+
+func TestNetworkAllowModeCompatibility(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	_, err := BuildPlan(Options{Project: ".", Instance: "host-allow-test", Network: "host", NetworkAllow: []string{"https://example.com"}, Podman: "off", TTY: "never", Command: []string{"/bin/true"}})
+	if err == nil || !strings.Contains(err.Error(), "cannot be used with --network=host") {
+		t.Fatalf("host allowlist error = %v", err)
+	}
+	plan, err := BuildPlan(Options{Project: ".", Instance: "none-allow-test", Network: "none", NetworkAllow: []string{"https://example.com"}, Podman: "off", TTY: "never", Command: []string{"/bin/true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ProxyGuestPort != 0 || strings.Contains(strings.Join(plan.Bwrap, "\x00"), "HTTP_PROXY") {
+		t.Fatalf("none mode activated proxy support: %#v", plan)
 	}
 }

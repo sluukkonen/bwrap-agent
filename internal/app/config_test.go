@@ -23,6 +23,7 @@ func TestConfigurationPrecedenceAndEnvironment(t *testing.T) {
 	writeTestFile(t, filepath.Join(userDirectory, "config.toml"), `
 network = "host"
 podman = "off"
+network_allow = ["https://user.example", "https://duplicate.example"]
 publish = ["11001:1"]
 ro_bind = ["user-relative"]
 unset_env = ["PROJECT_REINTRODUCED"]
@@ -37,6 +38,7 @@ instance = "project-instance"
 agent_config = false
 network = "private"
 tty = "never"
+network_allow = ["https://project.example", "https://duplicate.example:443"]
 publish = ["11002:2"]
 ro_bind = ["project-relative"]
 unset_env = ["PROJECT_UNSET"]
@@ -59,6 +61,7 @@ PRESENT = { inherit = true }
 		"run",
 		"--project", project,
 		"--network", "none",
+		"--network-allow", "https://cli.example",
 		"--instance", "cli-instance",
 		"--agent-config",
 		"--publish", "11003:3",
@@ -76,6 +79,9 @@ PRESENT = { inherit = true }
 	}
 	if want := []string{"11001:1", "11002:2", "11003:3"}; !reflect.DeepEqual(opts.Publish, want) {
 		t.Fatalf("publish = %#v, want %#v", opts.Publish, want)
+	}
+	if want := []string{"https://user.example", "https://duplicate.example", "https://project.example", "https://cli.example"}; !reflect.DeepEqual(opts.NetworkAllow, want) {
+		t.Fatalf("network allowlist = %#v, want %#v", opts.NetworkAllow, want)
 	}
 	wantBinds := []string{
 		filepath.Join(userDirectory, "user-relative"),
@@ -203,6 +209,7 @@ func TestConfigurationIsStrict(t *testing.T) {
 		{"invocation key", `project = "/tmp"`},
 		{"wrong scalar type", `network = true`},
 		{"invalid choice", `tty = "sometimes"`},
+		{"invalid network origin", `network_allow = ["ssh://example.com"]`},
 		{"invalid instance", `instance = "has spaces"`},
 		{"reserved instance", `instance = ".deleting-private"`},
 		{"invalid env type", "[env]\nFOO = true"},

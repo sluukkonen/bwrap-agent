@@ -30,9 +30,16 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # Default: true.
 # agent_config = true
 
-# Network mode: "private" (isolated via pasta), "host", or "none".
+# Network mode: "private" (HTTP/HTTPS allowlist enforced), "host"
+# (shared and unrestricted), or "none".
 # Default: "private".
 # network = "private"
+
+# HTTP/HTTPS origins reachable in private mode. An empty combined list denies
+# all outside access. Exact hosts, leading *. wildcards, and a full * wildcard
+# are accepted. A missing port means 80 for HTTP or 443 for HTTPS. Arrays from
+# configuration layers and the CLI are combined and deduplicated.
+# network_allow = ["https://registry.example.com", "https://*.example.com"]
 
 # Publish private-network ports on host loopback. Entries use
 # "[HOST_PORT:]GUEST_PORT[/tcp|udp]"; HOST_PORT 0 chooses a free port.

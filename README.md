@@ -85,6 +85,7 @@ Missing files are ignored. Existing files are parsed strictly: unknown keys, inv
 instance = "my-project" # project configuration only
 agent_config = true
 network = "private"
+network_allow = ["https://registry.example.com", "https://*.packages.example.com"]
 podman = "auto"
 write_policy = "workspace"
 tty = "auto"
@@ -100,7 +101,7 @@ EMPTY = ""
 FROM_HOST = { inherit = true }
 ```
 
-Scalar settings are replaced by higher-precedence layers. `instance` is accepted only in the project file, and `--instance` takes precedence over it. `publish`, `ro_bind`, and `rw_bind` arrays are appended; relative bind paths are resolved from the directory containing their config file. Environment entries merge by name. A string is literal, including an empty string, while `{ inherit = true }` deliberately copies the same-named variable from the launcher's host environment. If that variable is absent, it remains unset. The equivalent CLI forms are `--env NAME=value`, `--env NAME=`, and `--env NAME`.
+Scalar settings are replaced by higher-precedence layers. `instance` is accepted only in the project file, and `--instance` takes precedence over it. `network_allow`, `publish`, `ro_bind`, and `rw_bind` arrays are appended; duplicate normalized network origins are removed, and relative bind paths are resolved from the directory containing their config file. Environment entries merge by name. A string is literal, including an empty string, while `{ inherit = true }` deliberately copies the same-named variable from the launcher's host environment. If that variable is absent, it remains unset. The equivalent CLI forms are `--env NAME=value`, `--env NAME=`, and `--env NAME`.
 
 > **Warning:** Project configuration is fully trusted and is evaluated before the sandbox starts. It can request arbitrary host bind mounts, select host networking, and expose sensitive host environment variables. Inspect `.bwrap-agent.toml` in an untrusted checkout or launch with `run --no-project-config`. A project configuration symlink is rejected by default because a writable checkout could retarget it between runs.
 
@@ -120,6 +121,21 @@ The project and linked-worktree Git metadata are then read-only. Sandbox-managed
 
 The default `private` mode gives every invocation its own network namespace. Agents can independently bind `localhost:3000` or publish a Podman container on `localhost:5432` without colliding with another sandbox. Those ports are initially reachable only from that sandbox.
 
+Private mode has no direct outbound interface. Standard `HTTP_PROXY`, `HTTPS_PROXY`, and lowercase equivalents point to a launcher-owned enforcing proxy, and the combined allowlist is empty by default, so outside access is denied. Allow exact or wildcard HTTP/HTTPS origins with configuration or a repeatable option:
+
+```console
+$ ./bin/bwrap-agent run \
+    --network-allow https://registry.npmjs.org \
+    --network-allow 'https://*.example.com' \
+    opencode
+```
+
+An omitted port means 80 for HTTP or 443 for HTTPS; specify another port explicitly. `http://*` and `https://*` allow every valid hostname on their respective default port. A leading `*.` matches subdomains but not the parent name. Paths, credentials, queries, and fragments are rejected. Loopback, link-local, unspecified, and multicast destinations are never dialed by the host-side proxy, including when a broad rule is present.
+
+The proxy accepts ordinary HTTP and HTTPS `CONNECT`. HTTPS remains end-to-end encrypted, but the initial TLS server name must match the CONNECT destination; encrypted ClientHello is rejected because its destination cannot be verified. Software must honor the standard proxy variables in this first version. Direct sockets and non-HTTP protocols have no outside route. Podman passes the proxy variables into containers by default, so image pulls, package managers, and Testcontainers use the same policy.
+
+Regular rootless Podman networks receive a working `host.containers.internal` proxy endpoint automatically. A container started with Podman's `--network host` shares the sandbox network namespace instead; override its proxy URL to `http://127.0.0.1:65532` if that uncommon mode is needed. This still reaches the same allowlist-enforcing proxy.
+
 Expose a port to the host explicitly:
 
 ```console
@@ -130,7 +146,7 @@ $ ./bin/bwrap-agent run --publish 13000:3000 opencode
 $ ./bin/bwrap-agent run --publish 0:3000 opencode
 ```
 
-`--network host` is available for compatibility but loses port isolation. `--network none` disables networking. In an air-gapped installation, a future HTTP allowlist mode can replace pasta without changing agent adapters.
+`--network host` is available for compatibility but loses port isolation and is unrestricted; combining it with a non-empty allowlist is rejected. `--network none` disables networking and ignores the allowlist.
 
 ## Podman and Testcontainers
 
@@ -163,6 +179,7 @@ Do not bind the host Podman socket into this sandbox. Podman's API is deliberate
 --instance NAME            select a managed instance name
 --network private|host|none
                            choose isolated (default), shared, or disabled networking
+--network-allow ORIGIN     allow one HTTP/HTTPS origin in private mode (repeatable)
 --publish PORT             publish a private-network port on host loopback
 --dry-run                 print the full launch plan as JSON
 --allow-control-file-writes

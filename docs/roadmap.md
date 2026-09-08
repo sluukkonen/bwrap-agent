@@ -18,4 +18,4 @@
 - Shared read-only image and package caches with per-instance writable overlays.
 - Extend the OpenCode and Pi adapter registry with config discovery, first-run login, and version checks for more agents while retaining the generic command interface.
 - Structured audit events for mounts, published ports, lifecycle, and policy decisions.
-- An HTTP(S)-only proxy mode with destination allowlists and internal CA support.
+- Optional transparent TUN interception, upstream-proxy chaining, and internal CA support for the HTTP(S) allowlist.

@@ -24,7 +24,7 @@ The boundary is intended to protect hidden host files, other agent processes, ho
 - Project-local `.bwrap-agent.toml` is fully trusted and evaluated by the host launcher before sandbox creation. It can request arbitrary read-only or read-write binds, select host networking, copy explicitly named host environment variables into the sandbox, and select an instance name owned by that canonical project. Cross-project instance reuse is rejected. Use `run --no-project-config` for untrusted checkouts.
 - Recognized host agent configuration and executable resources are exposed read-only. Path overrides and automatically discovered sources are rejected if a sandbox-writable path could retarget them, but the configuration itself is trusted and may execute plugins or refer to deliberately exposed resources.
 - External Git metadata is exposed only after its worktree backlink or `core.worktree` association has been validated. Malformed and unrelated `.git` pointers abort launch.
-- Network access permits exfiltration of project contents. Air-gapping or a controlled proxy is required when confidentiality matters.
+- Private networking denies outbound access by default. Each allowed HTTP/HTTPS origin can receive project contents and must be trusted accordingly. Host networking remains unrestricted and permits arbitrary exfiltration.
 - Interactive commands control a launcher-owned proxy PTY, not the host terminal device. Their escape-sequence output is necessarily forwarded to the user's terminal; the launcher restores terminal modes on exit as defense in depth.
 - Kernel and namespace escapes remain possible. This is defense in depth, not a VM-strength tenant boundary.
 
@@ -41,5 +41,7 @@ The Podman API grants the socket holder full Podman functionality. An agent coul
 - Managed instances can be listed and deleted explicitly, but automatic age-based pruning and component-specific reset are not implemented.
 - Control-path protection is path-based. It does not interpret custom Git `core.hooksPath` values, arbitrary external plugin references, hard-link aliases created before launch, or every future agent convention. A repository initialized during a run receives Git-specific protection on its next launch.
 - Only current Fedora-like and conventional merged-`/usr` layouts have been exercised; a compatibility test matrix is needed.
+- Private-mode clients must honor HTTP proxy environment variables. Transparent interception, upstream-proxy chaining, non-HTTP protocols, and TLS Encrypted ClientHello are not supported.
+- HTTPS enforcement verifies the CONNECT authority and visible TLS SNI without decrypting traffic. It cannot inspect the encrypted HTTP `Host`/`:authority`; an explicitly allowed endpoint that supports domain fronting or acts as a relay can therefore carry traffic for another logical origin.
 - Detached processes are stopped best-effort. A systemd scope with cgroup kill semantics should enforce cleanup.
 - Missing control paths require temporary host-side mountpoint inodes while a sandbox is running. Normal exit and handled signals remove the exact inodes. An uncatchable launcher termination can leave neutral, restrictive placeholders temporarily; the project registry lets the next protected launch verify and reuse them, and its last active launcher removes them.

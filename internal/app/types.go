@@ -2,7 +2,10 @@ package app
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"strconv"
 )
 
 const internalInitMode = "__bwrap_agent_sandbox_init"
@@ -24,6 +27,8 @@ type LaunchPlan struct {
 	Project        string
 	State          string
 	WritePolicy    string
+	NetworkAllow   []string
+	ProxyGuestPort int
 	Command        []string
 	Outer          []string
 	Bwrap          []string
@@ -42,6 +47,29 @@ func (p LaunchPlan) Argv() []string {
 	return argv
 }
 
+func (p LaunchPlan) runtimeArgv(proxyHostPort int) ([]string, error) {
+	argv := p.Argv()
+	if p.ProxyGuestPort == 0 {
+		return argv, nil
+	}
+	if proxyHostPort < 1 || proxyHostPort > 65535 {
+		return nil, fmt.Errorf("invalid runtime proxy port %d", proxyHostPort)
+	}
+	replaced := false
+	expected := strconv.Itoa(p.ProxyGuestPort) + ":" + proxyPortPlaceholder
+	replacement := strconv.Itoa(p.ProxyGuestPort) + ":" + strconv.Itoa(proxyHostPort)
+	for index := range p.Outer {
+		if argv[index] == expected {
+			argv[index] = replacement
+			replaced = true
+		}
+	}
+	if !replaced {
+		return nil, errors.New("private network plan has no proxy port placeholder")
+	}
+	return argv, nil
+}
+
 func writePlanJSON(w io.Writer, p LaunchPlan) error {
 	configFiles := append([]ConfigSource{}, p.ConfigFiles...)
 	value := struct {
@@ -49,6 +77,8 @@ func writePlanJSON(w io.Writer, p LaunchPlan) error {
 		Project        string            `json:"project"`
 		State          string            `json:"state"`
 		WritePolicy    string            `json:"write_policy"`
+		NetworkAllow   []string          `json:"network_allow"`
+		ProxyGuestPort int               `json:"proxy_guest_port,omitempty"`
 		Command        []string          `json:"command"`
 		Ports          []PortMapping     `json:"ports"`
 		Environment    map[string]string `json:"environment"`
@@ -58,6 +88,7 @@ func writePlanJSON(w io.Writer, p LaunchPlan) error {
 		Argv           []string          `json:"argv"`
 	}{
 		Instance: p.Instance, Project: p.Project, State: p.State, WritePolicy: p.WritePolicy,
+		NetworkAllow: append([]string{}, p.NetworkAllow...), ProxyGuestPort: p.ProxyGuestPort,
 		Command: p.Command, Ports: p.Ports, Environment: p.LaunchEnv, TTY: p.TTY,
 		ConfigFiles: configFiles, ProtectedPaths: append([]string{}, p.ProtectedPaths...), Argv: p.Argv(),
 	}

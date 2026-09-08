@@ -11,17 +11,18 @@ import (
 )
 
 type fileConfig struct {
-	Instance    *string        `toml:"instance"`
-	AgentConfig *bool          `toml:"agent_config"`
-	Network     *string        `toml:"network"`
-	Publish     []string       `toml:"publish"`
-	Podman      *string        `toml:"podman"`
-	WritePolicy *string        `toml:"write_policy"`
-	ROBind      []string       `toml:"ro_bind"`
-	RWBind      []string       `toml:"rw_bind"`
-	Env         map[string]any `toml:"env"`
-	UnsetEnv    []string       `toml:"unset_env"`
-	TTY         *string        `toml:"tty"`
+	Instance     *string        `toml:"instance"`
+	AgentConfig  *bool          `toml:"agent_config"`
+	Network      *string        `toml:"network"`
+	NetworkAllow []string       `toml:"network_allow"`
+	Publish      []string       `toml:"publish"`
+	Podman       *string        `toml:"podman"`
+	WritePolicy  *string        `toml:"write_policy"`
+	ROBind       []string       `toml:"ro_bind"`
+	RWBind       []string       `toml:"rw_bind"`
+	Env          map[string]any `toml:"env"`
+	UnsetEnv     []string       `toml:"unset_env"`
+	TTY          *string        `toml:"tty"`
 }
 
 type envDirectiveKind uint8
@@ -38,16 +39,17 @@ type envDirective struct {
 }
 
 type optionLayer struct {
-	instance    *string
-	agentConfig *bool
-	network     *string
-	publish     []string
-	podman      *string
-	writePolicy *string
-	roBind      []string
-	rwBind      []string
-	environment map[string]envDirective
-	tty         *string
+	instance     *string
+	agentConfig  *bool
+	network      *string
+	networkAllow []string
+	publish      []string
+	podman       *string
+	writePolicy  *string
+	roBind       []string
+	rwBind       []string
+	environment  map[string]envDirective
+	tty          *string
 }
 
 func userConfigPath() (string, error) {
@@ -125,6 +127,10 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 	if err := validateChoice("network", config.Network, "private", "host", "none"); err != nil {
 		return optionLayer{}, err
 	}
+	networkAllow, err := normalizeNetworkAllowList(config.NetworkAllow)
+	if err != nil {
+		return optionLayer{}, fmt.Errorf("network_allow: %w", err)
+	}
 	if err := validateChoice("podman", config.Podman, "auto", "on", "off"); err != nil {
 		return optionLayer{}, err
 	}
@@ -160,16 +166,17 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 		environment[name] = envDirective{kind: envUnset}
 	}
 	return optionLayer{
-		instance:    config.Instance,
-		agentConfig: config.AgentConfig,
-		network:     config.Network,
-		publish:     config.Publish,
-		podman:      config.Podman,
-		writePolicy: config.WritePolicy,
-		roBind:      roBind,
-		rwBind:      rwBind,
-		environment: environment,
-		tty:         config.TTY,
+		instance:     config.Instance,
+		agentConfig:  config.AgentConfig,
+		network:      config.Network,
+		networkAllow: networkAllow,
+		publish:      config.Publish,
+		podman:       config.Podman,
+		writePolicy:  config.WritePolicy,
+		roBind:       roBind,
+		rwBind:       rwBind,
+		environment:  environment,
+		tty:          config.TTY,
 	}, nil
 }
 
@@ -326,6 +333,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		if layer.tty != nil {
 			opts.TTY = *layer.tty
 		}
+		opts.NetworkAllow = appendUnique(opts.NetworkAllow, layer.networkAllow...)
 		opts.Publish = append(opts.Publish, layer.publish...)
 		opts.ROBind = append(opts.ROBind, layer.roBind...)
 		opts.RWBind = append(opts.RWBind, layer.rwBind...)
@@ -340,19 +348,27 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 	if err != nil {
 		return Options{}, err
 	}
+	cliNetworkAllow, err := normalizeNetworkAllowList(cli.NetworkAllow)
+	if err != nil {
+		return Options{}, fmt.Errorf("--network-allow: %w", err)
+	}
 	apply(optionLayer{
-		instance:    cli.Instance,
-		agentConfig: cli.AgentConfig,
-		network:     cli.Network,
-		publish:     cli.Publish,
-		podman:      cli.Podman,
-		writePolicy: cli.WritePolicy,
-		roBind:      cli.ROBind,
-		rwBind:      cli.RWBind,
-		environment: cliEnvironment,
-		tty:         cli.TTY,
+		instance:     cli.Instance,
+		agentConfig:  cli.AgentConfig,
+		network:      cli.Network,
+		networkAllow: cliNetworkAllow,
+		publish:      cli.Publish,
+		podman:       cli.Podman,
+		writePolicy:  cli.WritePolicy,
+		roBind:       cli.ROBind,
+		rwBind:       cli.RWBind,
+		environment:  cliEnvironment,
+		tty:          cli.TTY,
 	})
 	opts.NoAgentConfig = !agentConfig
 	opts.Env, opts.UnsetEnv = resolveEnvironment(environment, hostEnvironment)
+	if opts.Network == "host" && len(opts.NetworkAllow) > 0 {
+		return Options{}, fmt.Errorf("--network-allow cannot be used with --network=host")
+	}
 	return opts, nil
 }

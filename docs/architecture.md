@@ -5,7 +5,7 @@
 ```text
 host user
   `-- podman unshare                 rootless user/mount namespace + subuid map
-       `-- pasta --netns-only        one connected network namespace per agent
+       `-- pasta --splice-only       loopback-only proxy and published-port forwarding
             `-- bwrap               synthetic filesystem + PID/IPC/UTS/cgroup namespaces
                  `-- Go sandbox init process
                       |-- podman service  lazily activated sandbox-local API
@@ -23,7 +23,7 @@ With `run --podman off`, pasta creates the user and private network namespaces t
 
 The CLI is parsed into a presence-aware representation first, so an omitted flag is distinguishable from an explicit override. The canonical project is then resolved and TOML layers are loaded from the user config directory and the exact project root. Built-in defaults, user config, project config, and CLI values are merged in that order before instance resolution and launch-plan construction. A fixed `instance` name is accepted only in project configuration because a user-wide literal would collide across canonical projects; `--instance` remains the highest-precedence override. Help and CLI syntax handling happen before config loading, providing a recovery path for malformed files.
 
-Config scalars replace lower values, while mount and publish lists append. Environment values are merged as literal, host-inherit, or unset directives and resolved only after all layers have been applied. Only variables explicitly selected for host inheritance are copied from the original launcher environment. Loaded config paths are retained as launch-plan metadata for dry-run auditing.
+Config scalars replace lower values, while network-allow, mount, and publish lists append. Network origins are normalized and deduplicated. Environment values are merged as literal, host-inherit, or unset directives and resolved only after all layers have been applied. Only variables explicitly selected for host inheritance are copied from the original launcher environment. Loaded config paths are retained as launch-plan metadata for dry-run auditing.
 
 ## Filesystem view
 
@@ -68,4 +68,6 @@ At shutdown, the sandbox init mode in the `bwrap-agent` executable stops every c
 
 ## Port semantics
 
-Private namespaces allow identical guest ports in parallel. Pasta's automatic inbound forwarding is disabled because it would race for the same host ports. `run --publish HOST:GUEST` installs a deliberate mapping; `HOST=0` chooses a currently unused host port. Allocation has a small bind-release-start race that should be removed by a future long-running supervisor.
+Private mode runs pasta in splice-only mode: the namespace has loopback but no routable interface. One namespace-to-host TCP mapping reaches a Go HTTP/CONNECT proxy bound to a random host-loopback port; the runtime port is substituted only after the listener is reserved. The sandbox uses a loopback proxy URL, while ordinary nested Podman networks receive a `host.containers.internal` URL backed by a dedicated nested-pasta host-loopback mapping. A nested container using Podman's `--network host` must instead point its proxy variables to the sandbox's `127.0.0.1:65532`. Direct sockets have no route. The proxy normalizes destinations, enforces the merged origin policy, rejects protected host-local address classes, pins each dial to a checked DNS result, forces HTTP's upstream Host to the allowed authority, and verifies that CONNECT begins with TLS whose visible SNI matches that authority. Unknown, hidden-ECH, and non-HTTP protocols fail closed.
+
+Private namespaces allow identical guest ports in parallel. Pasta's automatic inbound forwarding is disabled because it would race for the same host ports. `run --publish HOST:GUEST` installs a deliberate loopback mapping; `HOST=0` chooses a currently unused host port. Allocation has a small bind-release-start race that should be removed by a future long-running supervisor.

@@ -30,6 +30,7 @@ type Options struct {
 	Instance               string
 	NoAgentConfig          bool
 	Network                string
+	NetworkAllow           []string
 	Publish                []string
 	Podman                 string
 	WritePolicy            string
@@ -52,7 +53,8 @@ type cliOptions struct {
 	AgentConfig            *bool      `name:"agent-config" negatable:"" help:"Expose detected host agent configuration read-only and seed mutable credentials. Default: enabled."`
 	NoConfig               bool       `name:"no-config" help:"Do not load user or project configuration files."`
 	NoProjectConfig        bool       `name:"no-project-config" help:"Load user configuration but not the project configuration file."`
-	Network                *string    `name:"network" enum:"private,host,none" placeholder:"private|host|none" help:"Network mode: private (isolated via pasta), host (shared), or none (disabled). Default: private."`
+	Network                *string    `name:"network" enum:"private,host,none" placeholder:"private|host|none" help:"Network mode: private (HTTP/HTTPS allowlist enforced), host (shared and unrestricted), or none (disabled). Default: private."`
+	NetworkAllow           stringList `name:"network-allow" placeholder:"ORIGIN" help:"Allow an HTTP/HTTPS origin in private mode; repeatable (for example https://registry.example.com or https://*.example.com)."`
 	Publish                stringList `name:"publish" placeholder:"[HOST_PORT:]GUEST_PORT[/tcp|udp]" help:"Publish a private-network port on host loopback; repeatable. HOST_PORT=0 chooses a free port. Requires --network=private."`
 	Podman                 *string    `name:"podman" enum:"auto,on,off" placeholder:"auto|on|off" help:"Podman mode: auto (enable if found), on (require), or off (disable). Enabled modes provide a lazy API socket. Default: auto."`
 	WritePolicy            *string    `name:"write-policy" enum:"workspace,state-only" placeholder:"workspace|state-only" help:"Host write policy: workspace (project, Git metadata, state, and --rw-bind paths) or state-only (instance state only). Default: workspace."`
@@ -308,6 +310,29 @@ func Main(args []string) int {
 		}
 		return 0
 	}
+	argv := plan.Argv()
+	var proxy *networkProxy
+	if plan.ProxyGuestPort != 0 {
+		policy, policyErr := parseNetworkPolicy(plan.NetworkAllow)
+		if policyErr != nil {
+			_ = control.Close()
+			fmt.Fprintf(os.Stderr, "bwrap-agent: invalid network allowlist: %v\n", policyErr)
+			return 2
+		}
+		proxy, err = startNetworkProxy(policy)
+		if err != nil {
+			_ = control.Close()
+			fmt.Fprintf(os.Stderr, "bwrap-agent: start network policy proxy: %v\n", err)
+			return 126
+		}
+		defer proxy.Close()
+		argv, err = plan.runtimeArgv(proxy.port())
+		if err != nil {
+			_ = control.Close()
+			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare private network: %v\n", err)
+			return 126
+		}
+	}
 	if control != nil {
 		if err := control.prepare(plan.ControlCleanup); err != nil {
 			_ = control.Close()
@@ -330,9 +355,9 @@ func Main(args []string) int {
 	status := 0
 	if plan.TTY {
 		signal.Notify(launchSignals, syscall.SIGWINCH)
-		status = runWithPTYSignals(plan.Argv(), plan.LaunchEnv, os.Stdin, os.Stdout, launchSignals)
+		status = runWithPTYSignals(argv, plan.LaunchEnv, os.Stdin, os.Stdout, launchSignals)
 	} else {
-		status = runDirectSignals(plan.Argv(), plan.LaunchEnv, os.Stdin, os.Stdout, os.Stderr, launchSignals)
+		status = runDirectSignals(argv, plan.LaunchEnv, os.Stdin, os.Stdout, os.Stderr, launchSignals)
 	}
 	if err := control.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: clean up control-path placeholders: %v\n", err)
