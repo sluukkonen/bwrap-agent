@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -375,9 +374,7 @@ func TestLinkedWorktreeCommonDirectoryIsMounted(t *testing.T) {
 		{"-C", repository, "config", "user.name", "Test User"},
 		{"-C", repository, "config", "user.email", "test@example.invalid"},
 	} {
-		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", arguments, err, output)
-		}
+		runGit(t, arguments...)
 	}
 	if err := os.WriteFile(filepath.Join(repository, "tracked"), []byte("content"), 0o600); err != nil {
 		t.Fatal(err)
@@ -387,9 +384,7 @@ func TestLinkedWorktreeCommonDirectoryIsMounted(t *testing.T) {
 		{"-C", repository, "commit", "-m", "initial"},
 		{"-C", repository, "worktree", "add", "--detach", worktree, "HEAD"},
 	} {
-		if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", arguments, err, output)
-		}
+		runGit(t, arguments...)
 	}
 	common, err := filepath.EvalSymlinks(filepath.Join(repository, ".git"))
 	if err != nil {
@@ -698,6 +693,9 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	}
 	if plan.LaunchEnv["PODMAN_NO_PAUSE_PROCESS"] != "1" {
 		t.Fatalf("outer Podman pause-process mode = %q", plan.LaunchEnv["PODMAN_NO_PAUSE_PROCESS"])
+	}
+	if !strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--setenv\x00PODMAN_NO_PAUSE_PROCESS\x001") {
+		t.Fatalf("sandbox Podman pause-process mode is missing: %#v", plan.Bwrap)
 	}
 	if !strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--setenv\x00XDG_RUNTIME_DIR\x00/run/bwrap-agent/runtime") {
 		t.Fatalf("sandbox runtime directory is not private and short: %#v", plan.Bwrap)

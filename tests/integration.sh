@@ -329,7 +329,7 @@ git -C "$readonly_repository" config user.name "Integration Test"
 git -C "$readonly_repository" config user.email "integration@example.invalid"
 printf 'unchanged\n' >"$readonly_repository/tracked"
 git -C "$readonly_repository" add tracked
-git -C "$readonly_repository" commit -qm initial
+git -c commit.gpgSign=false -C "$readonly_repository" commit -qm initial
 git -C "$readonly_repository" worktree add -q --detach "$readonly_project" HEAD
 
 "$binary" \

@@ -388,10 +388,23 @@ func TestStopPodmanPauseProcessVerifiesAndTerminatesKeeper(t *testing.T) {
 			_ = command.Wait()
 		}
 	}()
+	expectedRuntime := filepath.Join(oldRoot, "state", "run")
+	expectedStorage := filepath.Join(oldRoot, "state", "config", "containers", "storage.conf")
+	deadline := time.Now().Add(time.Second)
+	for {
+		environment, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(command.Process.Pid), "environ"))
+		if err == nil && podmanPauseEnvironmentMatches(environment, expectedRuntime, expectedStorage) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pause process environment was not ready: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if err := os.WriteFile(filepath.Join(pidDirectory, "pause.pid"), []byte(strconv.Itoa(command.Process.Pid)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := stopPodmanPauseProcess(tombstone); err != nil {
+	if err := stopPodmanPauseProcessForTombstone(tombstone); err != nil {
 		t.Fatal(err)
 	}
 	err := command.Wait()
@@ -399,6 +412,27 @@ func TestStopPodmanPauseProcessVerifiesAndTerminatesKeeper(t *testing.T) {
 	var exitError *exec.ExitError
 	if !errors.As(err, &exitError) {
 		t.Fatalf("pause process wait = %v, want signal exit", err)
+	}
+	if _, err := os.Lstat(filepath.Join(pidDirectory, "pause.pid")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pause pid file remains: %v", err)
+	}
+}
+
+func TestUnlinkStateFileDoesNotFollowIntermediateSymlink(t *testing.T) {
+	state := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "pause.pid")
+	if err := os.WriteFile(victim, []byte("safe\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(state, "run")); err != nil {
+		t.Fatal(err)
+	}
+	if err := unlinkStateFile(state, filepath.Join("run", "pause.pid")); err == nil {
+		t.Fatal("state unlink unexpectedly followed an intermediate symlink")
+	}
+	if content, err := os.ReadFile(victim); err != nil || string(content) != "safe\n" {
+		t.Fatalf("outside file changed: %q, %v", content, err)
 	}
 }
 

@@ -795,12 +795,16 @@ func waitForPidfd(pidfd int, milliseconds int) (bool, error) {
 	}
 }
 
-func stopPodmanPauseProcess(tombstone string) error {
-	name, valid := deletionTombstoneInstanceName(tombstone)
-	if !valid {
-		return fmt.Errorf("invalid instance tombstone path: %s", tombstone)
+func stopVerifiedPodmanPauseProcess(root, expectedRoot string) error {
+	state := filepath.Join(root, "state")
+	pidRelative := filepath.Join("run", "libpod", "tmp", "pause.pid")
+	removePIDFile := func() error {
+		if err := unlinkStateFile(state, pidRelative); err != nil {
+			return fmt.Errorf("remove Podman pause pid file: %w", err)
+		}
+		return nil
 	}
-	pidContent, err := readSmallNonblockingRegularFile(filepath.Join(tombstone, "state", "run", "libpod", "tmp", "pause.pid"), 32)
+	pidContent, err := readSmallNonblockingRegularFile(filepath.Join(state, pidRelative), 32)
 	if err != nil {
 		// The pid file is untrusted instance state. Missing, malformed, or
 		// replaced files cannot safely identify a process and are ignored.
@@ -812,7 +816,7 @@ func stopPodmanPauseProcess(tombstone string) error {
 	}
 	pidfd, err := unix.PidfdOpen(pid, 0)
 	if errors.Is(err, unix.ESRCH) {
-		return nil
+		return removePIDFile()
 	}
 	if err != nil {
 		return fmt.Errorf("open Podman pause process %d: %w", pid, err)
@@ -821,18 +825,17 @@ func stopPodmanPauseProcess(tombstone string) error {
 
 	environment, err := readSmallNonblockingRegularFile(filepath.Join("/proc", strconv.Itoa(pid), "environ"), 4*1024*1024)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return removePIDFile()
 	}
 	if err != nil {
 		return fmt.Errorf("inspect Podman pause process %d: %w", pid, err)
 	}
-	oldRoot := filepath.Join(filepath.Dir(tombstone), name)
-	if !podmanPauseEnvironmentMatches(environment, filepath.Join(oldRoot, "state", "run"),
-		filepath.Join(oldRoot, "state", "config", "containers", "storage.conf")) {
-		return nil
+	if !podmanPauseEnvironmentMatches(environment, filepath.Join(expectedRoot, "state", "run"),
+		filepath.Join(expectedRoot, "state", "config", "containers", "storage.conf")) {
+		return removePIDFile()
 	}
 	if err := unix.PidfdSendSignal(pidfd, unix.SIGTERM, nil, 0); errors.Is(err, unix.ESRCH) {
-		return nil
+		return removePIDFile()
 	} else if err != nil {
 		return fmt.Errorf("stop Podman pause process %d: %w", pid, err)
 	}
@@ -841,10 +844,10 @@ func stopPodmanPauseProcess(tombstone string) error {
 		return fmt.Errorf("wait for Podman pause process %d: %w", pid, err)
 	}
 	if exited {
-		return nil
+		return removePIDFile()
 	}
 	if err := unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0); errors.Is(err, unix.ESRCH) {
-		return nil
+		return removePIDFile()
 	} else if err != nil {
 		return fmt.Errorf("kill Podman pause process %d: %w", pid, err)
 	}
@@ -855,7 +858,16 @@ func stopPodmanPauseProcess(tombstone string) error {
 	if !exited {
 		return fmt.Errorf("Podman pause process %d did not exit", pid)
 	}
-	return nil
+	return removePIDFile()
+}
+
+func stopPodmanPauseProcessForTombstone(tombstone string) error {
+	name, valid := deletionTombstoneInstanceName(tombstone)
+	if !valid {
+		return fmt.Errorf("invalid instance tombstone path: %s", tombstone)
+	}
+	expectedRoot := filepath.Join(filepath.Dir(tombstone), name)
+	return stopVerifiedPodmanPauseProcess(tombstone, expectedRoot)
 }
 
 func withPodmanCleanupState(tombstone string, action func(runtime, storageConfig, containersConfig string, targets []string) error) (result error) {
@@ -958,7 +970,7 @@ func removeInstanceTombstoneWith(path string, removeAll, removeWithPodman func(s
 }
 
 func removeInstanceTombstone(path string) error {
-	if err := stopPodmanPauseProcess(path); err != nil {
+	if err := stopPodmanPauseProcessForTombstone(path); err != nil {
 		return err
 	}
 	return removeInstanceTombstoneWith(path, os.RemoveAll, podmanUnshareRemove)

@@ -725,6 +725,12 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	// This launcher-owned status value must reflect the resolved plan. Runtime
 	// security and cleanup use an internal command mode rather than trusting it.
 	environment["BWRAP_AGENT_PODMAN"] = boolString(podmanBin != "")
+	if podmanBin != "" {
+		// The outer podman-unshare supervisor keeps the user and mount namespace
+		// alive for the full launch, so neither it nor nested Podman commands
+		// need a persistent pause process.
+		environment["PODMAN_NO_PAUSE_PROCESS"] = "1"
+	}
 	// Never accept a policy payload from configuration or the host environment.
 	// Enabled Landlock replaces it below with a launcher-generated allowlist;
 	// otherwise the sandbox runtime must not see this internal control value.
@@ -949,11 +955,8 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	}
 	launchEnv := cloneMap(environment)
 	// The outer podman-unshare process needs a host-visible runtime directory;
-	// bubblewrap sets the shorter private value encoded in its own argv. The
-	// outer process itself keeps this namespace alive for the complete launch,
-	// so a separate persistent Podman pause process is unnecessary.
+	// bubblewrap sets the shorter private value encoded in its own argv.
 	launchEnv["XDG_RUNTIME_DIR"] = filepath.Join(state, "run")
-	launchEnv["PODMAN_NO_PAUSE_PROCESS"] = "1"
 	if storageConfig != "" {
 		launchEnv["CONTAINERS_STORAGE_CONF"] = storageConfig
 	}

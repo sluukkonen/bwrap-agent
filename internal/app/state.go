@@ -129,6 +129,38 @@ func ensureStateDirectory(state, relative string, mode uint32) (string, error) {
 	return filepath.Join(state, relative), nil
 }
 
+func unlinkStateFile(state, relative string) error {
+	parts, err := cleanRelative(relative)
+	if err != nil {
+		return err
+	}
+	if len(parts) == 0 {
+		return errors.New("state file path must name a file")
+	}
+	current, err := unix.Open(state, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = unix.Close(current)
+	}()
+	for _, part := range parts[:len(parts)-1] {
+		child, err := unix.Openat(current, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				return nil
+			}
+			return err
+		}
+		unix.Close(current)
+		current = child
+	}
+	if err := unix.Unlinkat(current, parts[len(parts)-1], 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return err
+	}
+	return nil
+}
+
 func writeStateFile(state, relative string, content []byte, mode uint32) (string, error) {
 	if filepath.IsAbs(relative) || relative == "" {
 		return "", fmt.Errorf("state file must be a clean relative path: %s", relative)

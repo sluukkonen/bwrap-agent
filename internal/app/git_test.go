@@ -10,6 +10,7 @@ import (
 
 func runGit(t *testing.T, arguments ...string) {
 	t.Helper()
+	arguments = append([]string{"-c", "commit.gpgSign=false"}, arguments...)
 	if output, err := exec.Command("git", arguments...).CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", arguments, err, output)
 	}

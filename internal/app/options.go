@@ -378,8 +378,17 @@ func Main(args []string) int {
 	} else {
 		status = runDirectSignals(argv, plan.LaunchEnv, os.Stdin, os.Stdout, os.Stderr, launchSignals)
 	}
-	if err := control.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: clean up control-path placeholders: %v\n", err)
+	var pauseErr error
+	if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] == "1" {
+		pauseErr = stopVerifiedPodmanPauseProcess(identity.Root, identity.Root)
+	}
+	controlErr := control.Close()
+	if pauseErr != nil {
+		fmt.Fprintf(os.Stderr, "bwrap-agent: clean up Podman pause process: %v\n", pauseErr)
+		return 126
+	}
+	if controlErr != nil {
+		fmt.Fprintf(os.Stderr, "bwrap-agent: clean up control-path placeholders: %v\n", controlErr)
 		return 126
 	}
 	return status
