@@ -910,8 +910,11 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	}
 	launchEnv := cloneMap(environment)
 	// The outer podman-unshare process needs a host-visible runtime directory;
-	// bubblewrap sets the shorter private value encoded in its own argv.
+	// bubblewrap sets the shorter private value encoded in its own argv. The
+	// outer process itself keeps this namespace alive for the complete launch,
+	// so a separate persistent Podman pause process is unnecessary.
 	launchEnv["XDG_RUNTIME_DIR"] = filepath.Join(state, "run")
+	launchEnv["PODMAN_NO_PAUSE_PROCESS"] = "1"
 	if storageConfig != "" {
 		launchEnv["CONTAINERS_STORAGE_CONF"] = storageConfig
 	}

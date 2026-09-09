@@ -669,6 +669,9 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if plan.LaunchEnv["XDG_RUNTIME_DIR"] != filepath.Join(plan.State, "run") {
 		t.Fatalf("outer runtime directory = %q", plan.LaunchEnv["XDG_RUNTIME_DIR"])
 	}
+	if plan.LaunchEnv["PODMAN_NO_PAUSE_PROCESS"] != "1" {
+		t.Fatalf("outer Podman pause-process mode = %q", plan.LaunchEnv["PODMAN_NO_PAUSE_PROCESS"])
+	}
 	if !strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--setenv\x00XDG_RUNTIME_DIR\x00/run/bwrap-agent/runtime") {
 		t.Fatalf("sandbox runtime directory is not private and short: %#v", plan.Bwrap)
 	}

@@ -366,6 +366,7 @@ test -e "$BWRAP_AGENT_STATE_HOME/instances/integration-read-only/state/home/stat
     --network host \
     --tty never \
 	/bin/sh -ec 'test "$BWRAP_AGENT_PODMAN" = 1; test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"; test -n "$DOCKER_HOST"; test -z "${CONTAINER_HOST:-}"; test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; ! pgrep -x podman >/dev/null; podman info >/dev/null; ! pgrep -x podman >/dev/null; printf "podman-ok\n"'
+test ! -e "$BWRAP_AGENT_STATE_HOME/instances/integration-podman/state/run/libpod/tmp/pause.pid"
 
 "$binary" \
     run \
@@ -518,6 +519,7 @@ if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     printf 'stale cleanup state\n' >"$interrupted_tombstone/.podman-cleanup-interrupted/probe"
     delete_output=$(XDG_RUNTIME_DIR="$unusable_runtime" XDG_CONFIG_HOME="$unusable_xdg" \
         CONTAINERS_STORAGE_CONF="$unusable_runtime" CONTAINERS_CONF="$unusable_runtime" \
+        STORAGE_DRIVER=invalid STORAGE_OPTS=invalid PODMAN_NO_PAUSE_PROCESS=0 \
         "$binary" instance delete integration-containers --yes)
     printf '%s\n' "$delete_output" | grep -q 'Deleted pending instance data'
     test "$(find "$BWRAP_AGENT_STATE_HOME/instances" -maxdepth 1 -type d -name '.deleting-integration-containers-*' -print -quit)" = ""

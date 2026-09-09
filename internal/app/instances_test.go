@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -201,6 +203,12 @@ func TestDeletionTombstoneMatchingIsStrict(t *testing.T) {
 			t.Errorf("invalid tombstone %q matched", entry)
 		}
 	}
+	if name, valid := deletionTombstoneInstanceName(".deleting-example-with-dash-0123456789abcdef"); !valid || name != "example-with-dash" {
+		t.Fatalf("tombstone instance name = %q, %t", name, valid)
+	}
+	if _, valid := deletionTombstoneInstanceName(".deleting-example-0123456789abcdeg"); valid {
+		t.Fatal("invalid tombstone produced an instance name")
+	}
 }
 
 func TestRemoveInstanceTombstoneUsesPodmanNamespace(t *testing.T) {
@@ -257,6 +265,9 @@ func TestPodmanCleanupEnvironmentOwnsRuntimeDirectory(t *testing.T) {
 		"XDG_RUNTIME_DIR=/unusable",
 		"CONTAINER_HOST=tcp://untrusted",
 		"CONTAINERS_STORAGE_CONF=/untrusted/storage.conf",
+		"STORAGE_DRIVER=overlay",
+		"STORAGE_OPTS=overlay.mount_program=/untrusted",
+		"PODMAN_NO_PAUSE_PROCESS=0",
 	}, "/trusted/runtime", "/trusted/storage.conf", "/trusted/containers.conf")
 	joined := strings.Join(environment, "\n")
 	if strings.Count(joined, "XDG_RUNTIME_DIR=") != 1 || !strings.Contains(joined, "XDG_RUNTIME_DIR=/trusted/runtime") {
@@ -268,7 +279,11 @@ func TestPodmanCleanupEnvironmentOwnsRuntimeDirectory(t *testing.T) {
 	if strings.Count(joined, "CONTAINERS_CONF=") != 1 || !strings.Contains(joined, "CONTAINERS_CONF=/trusted/containers.conf") {
 		t.Fatalf("cleanup containers environment = %#v", environment)
 	}
-	for _, forbidden := range []string{"XDG_RUNTIME_DIR=/unusable", "CONTAINER_HOST=", "CONTAINERS_STORAGE_CONF=/untrusted"} {
+	if strings.Count(joined, "PODMAN_NO_PAUSE_PROCESS=") != 1 || !strings.Contains(joined, "PODMAN_NO_PAUSE_PROCESS=1") {
+		t.Fatalf("cleanup pause-process environment = %#v", environment)
+	}
+	for _, forbidden := range []string{"XDG_RUNTIME_DIR=/unusable", "CONTAINER_HOST=", "CONTAINERS_STORAGE_CONF=/untrusted",
+		"STORAGE_DRIVER=", "STORAGE_OPTS=", "PODMAN_NO_PAUSE_PROCESS=0"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("cleanup environment retained %q: %#v", forbidden, environment)
 		}
@@ -346,6 +361,44 @@ func TestPodmanCleanupStateIsPrivateIsolatedAndTemporary(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStopPodmanPauseProcessVerifiesAndTerminatesKeeper(t *testing.T) {
+	root := t.TempDir()
+	store := filepath.Join(root, "instances")
+	tombstone := filepath.Join(store, ".deleting-example-0123456789abcdef")
+	pidDirectory := filepath.Join(tombstone, "state", "run", "libpod", "tmp")
+	if err := os.MkdirAll(pidDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := filepath.Join(store, "example")
+	command := exec.Command("/bin/sleep", "30")
+	command.Env = append(os.Environ(),
+		"_PODMAN_PAUSE=1",
+		"XDG_RUNTIME_DIR="+filepath.Join(oldRoot, "state", "run"),
+		"CONTAINERS_STORAGE_CONF="+filepath.Join(oldRoot, "state", "config", "containers", "storage.conf"))
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+	if err := os.WriteFile(filepath.Join(pidDirectory, "pause.pid"), []byte(strconv.Itoa(command.Process.Pid)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := stopPodmanPauseProcess(tombstone); err != nil {
+		t.Fatal(err)
+	}
+	err := command.Wait()
+	waited = true
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) {
+		t.Fatalf("pause process wait = %v, want signal exit", err)
 	}
 }
 
