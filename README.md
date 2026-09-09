@@ -62,6 +62,8 @@ $ ./bin/bwrap-agent instance delete feature-payments --yes
 
 Running instances cannot be deleted. Automatic pruning is planned but not implemented yet. To relocate the complete managed store, set `BWRAP_AGENT_STATE_HOME`; otherwise the standard `XDG_STATE_HOME` location is honored. The store must remain separate from projects, external Git metadata, and explicit read-write binds.
 
+Deletion enters the instance's rootless Podman user namespace when container storage requires it. If cleanup is interrupted after the instance has been removed from the listing, repeat the same `instance delete NAME` command to finish deleting its pending data; no second confirmation is required.
+
 ## Configuration
 
 Runtime behavior can be configured in TOML. The launcher loads these files in increasing precedence order:

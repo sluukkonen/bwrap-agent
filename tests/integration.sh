@@ -63,10 +63,13 @@ BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" \
     --network host \
     --tty never \
     /bin/true
+mkdir "$managed_home/instances/managed-project/state/inaccessible"
+chmod 000 "$managed_home/instances/managed-project/state/inaccessible"
 BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list --json \
     | grep -q '"name": "managed-project"'
 BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list \
     | grep -q 'managed-project.*stopped'
+chmod 700 "$managed_home/instances/managed-project/state/inaccessible"
 BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance delete managed-project --yes
 test "$(BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list --json)" = '[]'
 
@@ -501,4 +504,22 @@ if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     printf '%s\n' "$compose_output" | grep -q compose-root-ok
     printf '%s\n' "$compose_output" | grep -q compose-nonroot-ok
     printf 'compose-ok\n'
+
+    unusable_runtime="$test_root/unusable-runtime"
+    printf 'not a directory\n' >"$unusable_runtime"
+    unusable_xdg="$test_root/unusable-xdg"
+    mkdir -p "$unusable_xdg/containers"
+    printf 'invalid storage configuration\n' >"$unusable_xdg/containers/storage.conf"
+    printf 'invalid containers configuration\n' >"$unusable_xdg/containers/containers.conf"
+    container_instance="$BWRAP_AGENT_STATE_HOME/instances/integration-containers"
+    interrupted_tombstone="$BWRAP_AGENT_STATE_HOME/instances/.deleting-integration-containers-0123456789abcdef"
+    mv "$container_instance" "$interrupted_tombstone"
+    mkdir "$interrupted_tombstone/.podman-cleanup-interrupted"
+    printf 'stale cleanup state\n' >"$interrupted_tombstone/.podman-cleanup-interrupted/probe"
+    delete_output=$(XDG_RUNTIME_DIR="$unusable_runtime" XDG_CONFIG_HOME="$unusable_xdg" \
+        CONTAINERS_STORAGE_CONF="$unusable_runtime" CONTAINERS_CONF="$unusable_runtime" \
+        "$binary" instance delete integration-containers --yes)
+    printf '%s\n' "$delete_output" | grep -q 'Deleted pending instance data'
+    test "$(find "$BWRAP_AGENT_STATE_HOME/instances" -maxdepth 1 -type d -name '.deleting-integration-containers-*' -print -quit)" = ""
+    printf 'podman-instance-delete-ok\n'
 fi

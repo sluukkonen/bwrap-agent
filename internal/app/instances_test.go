@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -177,6 +180,197 @@ func TestDeletionTombstonesAreInternalAndHidden(t *testing.T) {
 	}
 }
 
+func TestDeletionTombstoneMatchingIsStrict(t *testing.T) {
+	for _, entry := range []string{
+		".deleting-example-0123456789abcdef",
+		".deleting-example-with-dash-0123456789abcdef",
+	} {
+		name := strings.TrimSuffix(strings.TrimPrefix(entry, deletionTombstonePrefix), "-0123456789abcdef")
+		if !deletionTombstoneMatches(name, entry) {
+			t.Errorf("valid tombstone %q did not match %q", entry, name)
+		}
+	}
+	for _, entry := range []string{
+		".deleting-example-0123456789abcde",
+		".deleting-example-0123456789abcdef0",
+		".deleting-example-0123456789abcdeg",
+		".deleting-example-0123456789ABCDEf",
+		".deleting-other-0123456789abcdef",
+	} {
+		if deletionTombstoneMatches("example", entry) {
+			t.Errorf("invalid tombstone %q matched", entry)
+		}
+	}
+}
+
+func TestRemoveInstanceTombstoneUsesPodmanNamespace(t *testing.T) {
+	tombstone := filepath.Join(t.TempDir(), ".deleting-example-0123456789abcdef")
+	if err := os.MkdirAll(filepath.Join(tombstone, "state", "podman", "storage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	directCalled := false
+	podmanCalled := false
+	err := removeInstanceTombstoneWith(tombstone, func(path string) error {
+		directCalled = true
+		return os.RemoveAll(path)
+	}, func(path string) error {
+		podmanCalled = true
+		return os.RemoveAll(filepath.Join(path, "state"))
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !podmanCalled || !directCalled {
+		t.Fatalf("cleanup calls: podman=%t direct=%t", podmanCalled, directCalled)
+	}
+}
+
+func TestRemoveInstanceTombstoneFallsBackToDirectRemoval(t *testing.T) {
+	tombstone := filepath.Join(t.TempDir(), ".deleting-example-0123456789abcdef")
+	if err := os.MkdirAll(filepath.Join(tombstone, "state", "podman", "storage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	podmanErr := errors.New("podman cleanup failed")
+	err := removeInstanceTombstoneWith(tombstone, os.RemoveAll, func(string) error { return podmanErr })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("tombstone remains after fallback: %v", err)
+	}
+}
+
+func TestInterruptedCleanupStateStillRequiresPodman(t *testing.T) {
+	tombstone := filepath.Join(t.TempDir(), ".deleting-example-0123456789abcdef")
+	if err := os.MkdirAll(filepath.Join(tombstone, ".podman-cleanup-interrupted", "storage"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	needed, err := tombstoneNeedsPodmanCleanup(tombstone)
+	if err != nil || !needed {
+		t.Fatalf("interrupted cleanup detection = %t, %v", needed, err)
+	}
+}
+
+func TestPodmanCleanupEnvironmentOwnsRuntimeDirectory(t *testing.T) {
+	environment := podmanCleanupEnvironment([]string{
+		"PATH=/usr/bin",
+		"XDG_RUNTIME_DIR=/unusable",
+		"CONTAINER_HOST=tcp://untrusted",
+		"CONTAINERS_STORAGE_CONF=/untrusted/storage.conf",
+	}, "/trusted/runtime", "/trusted/storage.conf", "/trusted/containers.conf")
+	joined := strings.Join(environment, "\n")
+	if strings.Count(joined, "XDG_RUNTIME_DIR=") != 1 || !strings.Contains(joined, "XDG_RUNTIME_DIR=/trusted/runtime") {
+		t.Fatalf("cleanup runtime environment = %#v", environment)
+	}
+	if strings.Count(joined, "CONTAINERS_STORAGE_CONF=") != 1 || !strings.Contains(joined, "CONTAINERS_STORAGE_CONF=/trusted/storage.conf") {
+		t.Fatalf("cleanup storage environment = %#v", environment)
+	}
+	if strings.Count(joined, "CONTAINERS_CONF=") != 1 || !strings.Contains(joined, "CONTAINERS_CONF=/trusted/containers.conf") {
+		t.Fatalf("cleanup containers environment = %#v", environment)
+	}
+	for _, forbidden := range []string{"XDG_RUNTIME_DIR=/unusable", "CONTAINER_HOST=", "CONTAINERS_STORAGE_CONF=/untrusted"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("cleanup environment retained %q: %#v", forbidden, environment)
+		}
+	}
+	if !strings.Contains(joined, "PATH=/usr/bin") {
+		t.Fatalf("cleanup environment lost ordinary value: %#v", environment)
+	}
+}
+
+func TestPodmanCleanupStateIsPrivateIsolatedAndTemporary(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		actionErr error
+	}{
+		{name: "success"},
+		{name: "failure", actionErr: errors.New("cleanup failed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			store := filepath.Join(root, "instances")
+			if err := os.Mkdir(store, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			tombstone := filepath.Join(store, ".deleting-example-0123456789abcdef")
+			if err := os.Mkdir(tombstone, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			staleCleanup := filepath.Join(tombstone, ".podman-cleanup-interrupted")
+			if err := os.Mkdir(staleCleanup, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			var cleanup string
+			err := withPodmanCleanupState(tombstone, func(runtime, storageConfig, containersConfig string, targets []string) error {
+				cleanup = filepath.Dir(runtime)
+				info, err := os.Stat(runtime)
+				if err != nil {
+					return err
+				}
+				if !info.IsDir() || info.Mode().Perm() != 0o700 {
+					return fmt.Errorf("runtime mode = %v", info.Mode())
+				}
+				content, err := os.ReadFile(storageConfig)
+				if err != nil {
+					return err
+				}
+				configuration := string(content)
+				for _, expected := range []string{`driver = "vfs"`, filepath.Join(cleanup, "storage"), filepath.Join(cleanup, "runroot")} {
+					if !strings.Contains(configuration, expected) {
+						return fmt.Errorf("storage configuration %q does not contain %q", configuration, expected)
+					}
+				}
+				if content, err := os.ReadFile(containersConfig); err != nil || !strings.Contains(string(content), `events_logger = "file"`) {
+					return fmt.Errorf("containers configuration = %q, %v", content, err)
+				}
+				if len(targets) != 1 || targets[0] != staleCleanup {
+					return fmt.Errorf("cleanup targets = %#v", targets)
+				}
+				if test.actionErr == nil {
+					return os.RemoveAll(staleCleanup)
+				}
+				return test.actionErr
+			})
+			if !errors.Is(err, test.actionErr) {
+				t.Fatalf("cleanup result = %v, want %v", err, test.actionErr)
+			}
+			if cleanup == "" {
+				t.Fatal("cleanup action did not receive cleanup state")
+			}
+			if _, err := os.Lstat(cleanup); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("temporary cleanup state remains: %v", err)
+			}
+			if test.actionErr == nil {
+				if _, err := os.Lstat(staleCleanup); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("interrupted cleanup state was not reclaimed: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestInstanceDeleteRetriesPendingTombstone(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	identity, err := resolveTestInstance(t, managedTestOptions(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tombstone := filepath.Join(filepath.Dir(identity.Root), deletionTombstonePrefix+identity.Instance+"-0123456789abcdef")
+	if err := os.Rename(identity.Root, tombstone); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := deleteInstance(identity.Instance, true, false, strings.NewReader(""), &output, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "Deleted pending instance data for \""+identity.Instance+"\".\n" {
+		t.Fatalf("retry output = %q", output.String())
+	}
+	if _, err := os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending tombstone remains: %v", err)
+	}
+}
+
 func TestInstanceDeleteConfirmationAndSafety(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	identity, err := resolveTestInstance(t, managedTestOptions(t.TempDir()))
@@ -262,6 +456,37 @@ func TestAllocatedDiskUsageIgnoresDisappearingFiles(t *testing.T) {
 	})
 	if err != nil || usage == 0 {
 		t.Fatalf("usage with disappearing file = %d, %v", usage, err)
+	}
+}
+
+func TestIgnorableDiskUsageErrors(t *testing.T) {
+	for _, err := range []error{
+		os.ErrNotExist,
+		os.ErrPermission,
+		&fs.PathError{Op: "readdir", Path: "/state/podman/work", Err: syscall.EACCES},
+		&fs.PathError{Op: "open", Path: "/state/podman/work", Err: syscall.EPERM},
+	} {
+		if !ignorableDiskUsageError(err) {
+			t.Errorf("error should be ignored while sizing: %v", err)
+		}
+	}
+	if ignorableDiskUsageError(&fs.PathError{Op: "read", Path: "/state/file", Err: syscall.EIO}) {
+		t.Fatal("unexpected I/O error was ignored")
+	}
+}
+
+func TestAllocatedDiskUsageSkipsUnreadableDirectory(t *testing.T) {
+	root := t.TempDir()
+	restricted := filepath.Join(root, "restricted")
+	if err := os.Mkdir(restricted, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(restricted, 0o700)
+	if _, err := os.ReadDir(restricted); err == nil {
+		t.Skip("current user can bypass mode-000 directory permissions")
+	}
+	if _, err := allocatedDiskUsage(root); err != nil {
+		t.Fatalf("sizing failed on unreadable directory: %v", err)
 	}
 }
 

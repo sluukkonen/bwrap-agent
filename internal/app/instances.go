@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -446,19 +447,23 @@ func allocatedDiskUsage(root string) (uint64, error) {
 	return allocatedDiskUsageWith(root, os.Lstat)
 }
 
+func ignorableDiskUsageError(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission)
+}
+
 func allocatedDiskUsageWith(root string, lstat func(string) (os.FileInfo, error)) (uint64, error) {
 	seen := map[fileIdentity]bool{}
 	var total uint64
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			if errors.Is(walkErr, os.ErrNotExist) {
+			if ignorableDiskUsageError(walkErr) {
 				return nil
 			}
 			return walkErr
 		}
 		info, err := lstat(path)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
+			if ignorableDiskUsageError(err) {
 				return nil
 			}
 			return err
@@ -675,6 +680,210 @@ func confirmedDeletion(name string, record instanceRecord, yes, interactive bool
 	return answer == "y" || answer == "yes", nil
 }
 
+func deletionTombstoneMatches(name, entry string) bool {
+	prefix := deletionTombstonePrefix + name + "-"
+	if !strings.HasPrefix(entry, prefix) {
+		return false
+	}
+	suffix := strings.TrimPrefix(entry, prefix)
+	if len(suffix) != 16 || suffix != strings.ToLower(suffix) {
+		return false
+	}
+	decoded, err := hex.DecodeString(suffix)
+	return err == nil && len(decoded) == 8
+}
+
+func tombstoneNeedsPodmanCleanup(tombstone string) (bool, error) {
+	path := filepath.Join(tombstone, "state", "podman", "storage")
+	info, err := os.Lstat(path)
+	if err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		return true, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	entries, err := os.ReadDir(tombstone)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".podman-cleanup-") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func podmanCleanupEnvironment(environment []string, runtime, storageConfig, containersConfig string) []string {
+	environment = withoutEnvironment(environment, "CONTAINER_HOST", "CONTAINER_CONNECTION", "DOCKER_HOST",
+		"CONTAINERS_STORAGE_CONF", "CONTAINERS_CONF", "CONTAINERS_CONF_OVERRIDE", "_CONTAINERS_USERNS_CONFIGURED",
+		"XDG_RUNTIME_DIR")
+	return append(environment, "XDG_RUNTIME_DIR="+runtime, "CONTAINERS_STORAGE_CONF="+storageConfig,
+		"CONTAINERS_CONF="+containersConfig)
+}
+
+func withPodmanCleanupState(tombstone string, action func(runtime, storageConfig, containersConfig string, targets []string) error) (result error) {
+	store := filepath.Dir(tombstone)
+	if filepath.Base(store) != "instances" {
+		return fmt.Errorf("invalid instance tombstone path: %s", tombstone)
+	}
+	entries, err := os.ReadDir(tombstone)
+	if err != nil {
+		return fmt.Errorf("read instance tombstone for Podman cleanup: %w", err)
+	}
+	targets := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		targets = append(targets, filepath.Join(tombstone, entry.Name()))
+	}
+	cleanup, err := os.MkdirTemp(tombstone, ".podman-cleanup-")
+	if err != nil {
+		return fmt.Errorf("create Podman cleanup state: %w", err)
+	}
+	defer func() {
+		if err := os.RemoveAll(cleanup); err != nil {
+			result = errors.Join(result, fmt.Errorf("remove Podman cleanup state: %w", err))
+		}
+	}()
+	runtime, err := ensureStateDirectory(cleanup, "runtime", 0o700)
+	if err != nil {
+		return err
+	}
+	graphRoot, err := ensureStateDirectory(cleanup, "storage", 0o700)
+	if err != nil {
+		return err
+	}
+	runRoot, err := ensureStateDirectory(cleanup, "runroot", 0o700)
+	if err != nil {
+		return err
+	}
+	graphJSON, _ := json.Marshal(graphRoot)
+	runJSON, _ := json.Marshal(runRoot)
+	content := fmt.Sprintf("[storage]\ndriver = \"vfs\"\ngraphroot = %s\nrunroot = %s\n", graphJSON, runJSON)
+	storageConfig, err := writeStateFile(cleanup, "storage.conf", []byte(content), 0o600)
+	if err != nil {
+		return err
+	}
+	containersConfig, err := writeStateFile(cleanup, "containers.conf", []byte("[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"file\"\n"), 0o600)
+	if err != nil {
+		return err
+	}
+	return action(runtime, storageConfig, containersConfig, targets)
+}
+
+func podmanUnshareRemove(path string) error {
+	podman, err := exec.LookPath("podman")
+	if err != nil {
+		return fmt.Errorf("Podman is required to remove rootless container storage: %w", err)
+	}
+	remove, err := exec.LookPath("rm")
+	if err != nil {
+		return fmt.Errorf("rm is required to remove rootless container storage: %w", err)
+	}
+	return withPodmanCleanupState(path, func(runtime, storageConfig, containersConfig string, targets []string) error {
+		arguments := append([]string{"unshare", remove, "-rf", "--"}, targets...)
+		command := exec.Command(podman, arguments...)
+		command.Env = podmanCleanupEnvironment(os.Environ(), runtime, storageConfig, containersConfig)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			message := strings.TrimSpace(string(output))
+			if message == "" {
+				return fmt.Errorf("podman unshare cleanup: %w", err)
+			}
+			return fmt.Errorf("podman unshare cleanup: %w: %s", err, message)
+		}
+		for _, target := range targets {
+			if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				if err == nil {
+					return fmt.Errorf("podman unshare cleanup left %s in place", target)
+				}
+				return fmt.Errorf("verify podman unshare cleanup of %s: %w", target, err)
+			}
+		}
+		return nil
+	})
+}
+
+func removeInstanceTombstoneWith(path string, removeAll, removeWithPodman func(string) error) error {
+	needsPodmanCleanup, err := tombstoneNeedsPodmanCleanup(path)
+	if err != nil {
+		return fmt.Errorf("inspect instance tombstone: %w", err)
+	}
+	var podmanErr error
+	if needsPodmanCleanup {
+		podmanErr = removeWithPodman(path)
+	}
+	if err := removeAll(path); err != nil {
+		if podmanErr != nil {
+			return fmt.Errorf("Podman namespace removal failed (%v); direct removal also failed: %w", podmanErr, err)
+		}
+		return err
+	}
+	return nil
+}
+
+func removeInstanceTombstone(path string) error {
+	return removeInstanceTombstoneWith(path, os.RemoveAll, podmanUnshareRemove)
+}
+
+func retryPendingInstanceDeletion(store, name string) (int, error) {
+	registryLock, err := acquireDirectoryLock(store, false)
+	if err != nil {
+		return 0, fmt.Errorf("lock managed instance store: %w", err)
+	}
+	defer func() {
+		if registryLock != nil {
+			_ = registryLock.Close()
+		}
+	}()
+	if _, found, err := existingManagedInstance(store, name); err != nil {
+		return 0, err
+	} else if found {
+		return 0, fmt.Errorf("instance %s appeared while retrying deletion; retry the command", name)
+	}
+	entries, err := os.ReadDir(store)
+	if err != nil {
+		return 0, err
+	}
+	type lockedTombstone struct {
+		path string
+		lock *instanceLock
+	}
+	var tombstones []lockedTombstone
+	closeLocks := func() {
+		for _, tombstone := range tombstones {
+			_ = tombstone.lock.Close()
+		}
+	}
+	defer closeLocks()
+	for _, entry := range entries {
+		if !entry.IsDir() || !deletionTombstoneMatches(name, entry.Name()) {
+			continue
+		}
+		path := filepath.Join(store, entry.Name())
+		lock, err := acquireDirectoryLock(path, true)
+		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
+			return 0, fmt.Errorf("instance %s deletion cleanup is already running", name)
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("lock instance tombstone %s: %w", path, err)
+		}
+		tombstones = append(tombstones, lockedTombstone{path: path, lock: lock})
+	}
+	if err := registryLock.Close(); err != nil {
+		return 0, err
+	}
+	registryLock = nil
+	for _, tombstone := range tombstones {
+		if err := removeInstanceTombstone(tombstone.path); err != nil {
+			return 0, fmt.Errorf("remove instance tombstone %s: %w", tombstone.path, err)
+		}
+	}
+	return len(tombstones), nil
+}
+
 func deleteManagedInstance(name string, expected instanceMetadata) error {
 	if _, err := safeName(name); err != nil {
 		return err
@@ -723,7 +932,7 @@ func deleteManagedInstance(name string, expected instanceMetadata) error {
 		return err
 	}
 	registryLock = nil
-	if err := os.RemoveAll(tombstone); err != nil {
+	if err := removeInstanceTombstone(tombstone); err != nil {
 		return fmt.Errorf("remove instance tombstone %s: %w", tombstone, err)
 	}
 	return nil
@@ -741,6 +950,16 @@ func deleteInstance(name string, yes, interactive bool, input io.Reader, output,
 		return fmt.Errorf("instance not found: %s", name)
 	}
 	record, err := inspectManagedInstance(store, name)
+	if errors.Is(err, errManagedInstanceNotFound) {
+		removed, cleanupErr := retryPendingInstanceDeletion(store, name)
+		if cleanupErr != nil {
+			return cleanupErr
+		}
+		if removed > 0 {
+			_, writeErr := fmt.Fprintf(output, "Deleted pending instance data for %q.\n", name)
+			return writeErr
+		}
+	}
 	if err != nil {
 		return err
 	}
