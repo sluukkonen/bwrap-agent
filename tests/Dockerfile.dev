@@ -1,0 +1,50 @@
+FROM golang:1.25-trixie
+
+ARG PASST_VERSION=2026_07_28.f8df3f1
+ARG PASST_SHA256=fcfeb5fbdf775bcc48edc1d5eac8a6d57bc333f8e67b714149376d36061416f0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bubblewrap \
+        curl \
+        fuse-overlayfs \
+        iproute2 \
+        iptables \
+        podman \
+        podman-compose \
+        slirp4netns \
+        uidmap \
+        xz-utils \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod u-s /usr/bin/bwrap
+
+RUN curl -fsSL -o /tmp/passt.tar.xz \
+        "https://passt.top/passt/snapshot/passt-${PASST_VERSION}.tar.xz" \
+    && echo "${PASST_SHA256}  /tmp/passt.tar.xz" | sha256sum --check --strict \
+    && tar -C /tmp -xf /tmp/passt.tar.xz \
+    && make -C "/tmp/passt-${PASST_VERSION}" VERSION="${PASST_VERSION}" passt pasta \
+    && install -m 0755 "/tmp/passt-${PASST_VERSION}/passt" /usr/local/bin/passt \
+    && ln -s passt /usr/local/bin/pasta \
+    && rm -rf /tmp/passt.tar.xz "/tmp/passt-${PASST_VERSION}"
+
+ARG DEV_UID=1000
+ARG DEV_GID=1000
+
+RUN set -eux; \
+    test "$DEV_UID" -ne 0; \
+    if ! getent group "$DEV_GID" >/dev/null; then groupadd --gid "$DEV_GID" developer; fi; \
+    useradd --uid "$DEV_UID" --gid "$DEV_GID" --create-home --shell /bin/bash developer; \
+    printf 'developer:100000:65536\n' >>/etc/subuid; \
+    printf 'developer:100000:65536\n' >>/etc/subgid; \
+    mkdir -p "/run/user/$DEV_UID" /home/developer/.cache/go-build /home/developer/.cache/go-mod; \
+    chown -R "$DEV_UID:$DEV_GID" "/run/user/$DEV_UID" /home/developer/.cache
+
+ENV CGO_ENABLED=0 \
+    GOCACHE=/home/developer/.cache/go-build \
+    GOMODCACHE=/home/developer/.cache/go-mod \
+    XDG_RUNTIME_DIR=/run/user/${DEV_UID}
+
+USER developer
+WORKDIR /workspace
+
+CMD ["bash"]

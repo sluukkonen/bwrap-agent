@@ -8,6 +8,8 @@ This is an early Linux-only implementation. Its default container design is inte
 
 Runtime requirements are non-setuid bubblewrap 0.11 or newer, pasta, and optionally Podman. Bubblewrap 0.12 or newer is recommended; 0.11 is accepted as a temporary compatibility tier with a launch warning. Rootless Podman must be configured for the user with subordinate UID/GID ranges. Building from source requires Go 1.24 or newer.
 
+The runtime is Linux-only. On macOS, the Make targets use a Linux development container through the Docker CLI; both Docker Desktop and Colima are supported. The resulting binary is a Linux executable and cannot be run directly on macOS.
+
 ```console
 $ make build
 ```
@@ -231,16 +233,26 @@ Interactive launches use a dedicated PTY automatically. The sandbox receives a r
 
 ## Development
 
+On Linux, the standard targets run directly on the host. On macOS, they build and run the development image automatically, mounting the checkout and persistent Go caches into the container:
+
 ```console
 $ make build
 $ make test
 $ make test-race
 $ make vet
+$ make check
 $ make integration
 $ make integration-testcontainers
 $ make dist
+$ make dev-shell
 $ ./bin/bwrap-agent run --podman off --network host --dry-run /usr/bin/id
 ```
+
+`make check` runs the unit tests and vet. `make dev-shell` opens an interactive, non-root Linux shell with Go and the sandbox runtime dependencies installed. The development image is available for both amd64 and arm64, so Docker selects the native architecture on Intel and Apple Silicon Macs. Direct `go build`, `go test`, and host-side `gopls` package checks remain unsupported on macOS because the runtime intentionally uses Linux-only APIs.
+
+The first containerized command downloads the development image and Go modules; later commands reuse `.cache/` in the checkout. If Docker is unavailable, start Docker Desktop or run `colima start`. `make install` remains Linux-only because macOS builds produce Linux executables.
+
+The two integration targets use a privileged container with Docker's seccomp profile disabled and host cgroup access. Some Colima kernels additionally set `kernel.apparmor_restrict_unprivileged_userns=1`, which prevents Bubblewrap and pasta from constructing their nested namespaces. The runner detects that setting and prints the temporary `colima ssh` command needed to disable it in a dedicated development VM; restart the VM or restore the value to `1` afterward. Native non-root Linux integration remains the authoritative security-boundary test. Use the privileged targets only on a trusted checkout. The regular `build`, `test`, `test-race`, `vet`, `check`, and `dev-shell` targets stay non-root and do not request those permissions.
 
 Set `BWRAP_AGENT_TEST_IMAGE` to an Alpine-compatible image available from the test environment to include Podman root/non-root execution, volumes, builds, and Compose in `make integration`. The regular suite also verifies Docker-compatible API socket activation and concurrent private sandboxes binding the same guest port.
 
