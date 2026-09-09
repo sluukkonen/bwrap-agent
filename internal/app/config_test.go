@@ -25,6 +25,7 @@ network = "host"
 podman = "off"
 workspace_mode = "copy-on-write"
 landlock = "off"
+seccomp = "off"
 network_allow = ["https://user.example", "https://duplicate.example"]
 publish = ["11001:1"]
 ro_bind = ["user-relative"]
@@ -42,6 +43,7 @@ network = "private"
 tty = "never"
 workspace_mode = "read-only"
 landlock = "auto"
+seccomp = "auto"
 network_allow = ["https://project.example", "https://duplicate.example:443"]
 publish = ["11002:2"]
 ro_bind = ["project-relative"]
@@ -69,6 +71,7 @@ PRESENT = { inherit = true }
 		"--instance", "cli-instance",
 		"--workspace-mode", "write-through",
 		"--landlock", "required",
+		"--seccomp", "required",
 		"--agent-config",
 		"--publish", "11003:3",
 		"--ro-bind", "cli-relative",
@@ -80,7 +83,7 @@ PRESENT = { inherit = true }
 	if err != nil || code != 0 {
 		t.Fatalf("parseOptions failed: code=%d err=%v stderr=%q", code, err, stderr.String())
 	}
-	if opts.Instance != "cli-instance" || opts.Network != "none" || opts.Podman != "off" || opts.WorkspaceMode != "write-through" || opts.Landlock != "required" || opts.TTY != "never" || opts.NoAgentConfig {
+	if opts.Instance != "cli-instance" || opts.Network != "none" || opts.Podman != "off" || opts.WorkspaceMode != "write-through" || opts.Landlock != "required" || opts.Seccomp != "required" || opts.TTY != "never" || opts.NoAgentConfig {
 		t.Fatalf("unexpected merged scalars: %#v", opts)
 	}
 	if want := []string{"11001:1", "11002:2", "11003:3"}; !reflect.DeepEqual(opts.Publish, want) {
@@ -215,6 +218,7 @@ func TestConfigurationIsStrict(t *testing.T) {
 		{"invocation key", `project = "/tmp"`},
 		{"wrong scalar type", `network = true`},
 		{"invalid choice", `tty = "sometimes"`},
+		{"invalid seccomp", `seccomp = "sometimes"`},
 		{"invalid network origin", `network_allow = ["ssh://example.com"]`},
 		{"invalid instance", `instance = "has spaces"`},
 		{"reserved instance", `instance = ".deleting-private"`},
@@ -339,19 +343,26 @@ func TestAgentConfigFlagsAndEmptyEnvironment(t *testing.T) {
 }
 
 func TestDryRunJSONIncludesConfigurationFiles(t *testing.T) {
-	plan := LaunchPlan{ConfigFiles: []ConfigSource{{Scope: "project", Path: "/work/.bwrap-agent.toml"}}}
+	plan := LaunchPlan{
+		ConfigFiles: []ConfigSource{{Scope: "project", Path: "/work/.bwrap-agent.toml"}},
+		Seccomp:     SeccompStatus{Requested: "auto", Effective: "enabled", Profile: seccompProfileDevelopment},
+	}
 	var output bytes.Buffer
 	if err := writePlanJSON(&output, plan); err != nil {
 		t.Fatal(err)
 	}
 	var decoded struct {
 		ConfigFiles []ConfigSource `json:"config_files"`
+		Seccomp     SeccompStatus  `json:"seccomp"`
 	}
 	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(decoded.ConfigFiles, plan.ConfigFiles) {
 		t.Fatalf("config files = %#v, want %#v", decoded.ConfigFiles, plan.ConfigFiles)
+	}
+	if decoded.Seccomp != plan.Seccomp {
+		t.Fatalf("seccomp status = %#v, want %#v", decoded.Seccomp, plan.Seccomp)
 	}
 }
 

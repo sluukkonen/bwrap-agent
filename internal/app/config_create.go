@@ -61,6 +61,12 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # incompatible with required Landlock enforcement. Default: "auto".
 # landlock = "auto"
 
+# Seccomp syscall filtering: "auto" enables a built-in workload profile when
+# supported, "required" fails closed, and "off" disables filtering. The
+# profile is selected automatically based on whether Podman is enabled.
+# Default: "auto".
+# seccomp = "auto"
+
 # Additional existing host paths to bind read-only. Relative paths are
 # resolved from this file's directory. Default: []. Arrays are appended.
 # ro_bind = ["./toolchain"]

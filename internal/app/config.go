@@ -19,6 +19,7 @@ type fileConfig struct {
 	Podman        *string        `toml:"podman"`
 	WorkspaceMode *string        `toml:"workspace_mode"`
 	Landlock      *string        `toml:"landlock"`
+	Seccomp       *string        `toml:"seccomp"`
 	ROBind        []string       `toml:"ro_bind"`
 	RWBind        []string       `toml:"rw_bind"`
 	Env           map[string]any `toml:"env"`
@@ -48,6 +49,7 @@ type optionLayer struct {
 	podman        *string
 	workspaceMode *string
 	landlock      *string
+	seccomp       *string
 	roBind        []string
 	rwBind        []string
 	environment   map[string]envDirective
@@ -142,6 +144,9 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 	if err := validateChoice("landlock", config.Landlock, "auto", "required", "off"); err != nil {
 		return optionLayer{}, err
 	}
+	if err := validateChoice("seccomp", config.Seccomp, "auto", "required", "off"); err != nil {
+		return optionLayer{}, err
+	}
 	if err := validateChoice("tty", config.TTY, "auto", "always", "never"); err != nil {
 		return optionLayer{}, err
 	}
@@ -179,6 +184,7 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 		podman:        config.Podman,
 		workspaceMode: config.WorkspaceMode,
 		landlock:      config.Landlock,
+		seccomp:       config.Seccomp,
 		roBind:        roBind,
 		rwBind:        rwBind,
 		environment:   environment,
@@ -313,6 +319,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		Podman:                 "auto",
 		WorkspaceMode:          "write-through",
 		Landlock:               "auto",
+		Seccomp:                "auto",
 		TTY:                    "auto",
 		DryRun:                 cli.DryRun,
 		AllowControlFileWrites: cli.AllowControlFileWrites,
@@ -339,6 +346,9 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		}
 		if layer.landlock != nil {
 			opts.Landlock = *layer.landlock
+		}
+		if layer.seccomp != nil {
+			opts.Seccomp = *layer.seccomp
 		}
 		if layer.tty != nil {
 			opts.TTY = *layer.tty
@@ -371,6 +381,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		podman:        cli.Podman,
 		workspaceMode: cli.WorkspaceMode,
 		landlock:      cli.Landlock,
+		seccomp:       cli.Seccomp,
 		roBind:        cli.ROBind,
 		rwBind:        cli.RWBind,
 		environment:   cliEnvironment,

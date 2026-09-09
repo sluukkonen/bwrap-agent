@@ -34,7 +34,8 @@ The Podman API grants the socket holder full Podman functionality. An agent coul
 
 ## Known gaps in the prototype
 
-- No seccomp policy, resource quotas, audit log, or verified host-policy file yet.
+- Default seccomp profiles conservatively reduce exposed kernel attack surface, but they are denylist defense in depth rather than a complete syscall allowlist.
+- Resource quotas, an audit log, and a verified host-policy file are not implemented yet.
 - Bubblewrap 0.11 is a warned compatibility tier affected by an upstream setup-time path-resolution vulnerability. The launcher orders destination creation before untrusted mounts and rejects setuid builds, but Bubblewrap 0.12 or newer is required for the supported security tier.
 - Podman-enabled launches require creation of a second user/mount namespace with an identity mapping of the outer rootless namespace. Failure is fatal rather than silently weakening mount protection.
 - `copy-on-write` with Podman disables nested per-container SELinux labeling because Bubblewrap's private temporary overlay cannot be relabeled. The outer bwrap-agent process retains its host SELinux confinement.

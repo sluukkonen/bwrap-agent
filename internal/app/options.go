@@ -35,6 +35,7 @@ type Options struct {
 	Podman                 string
 	WorkspaceMode          string
 	Landlock               string
+	Seccomp                string
 	ROBind                 []string
 	RWBind                 []string
 	Env                    []string
@@ -60,6 +61,7 @@ type cliOptions struct {
 	Podman                 *string    `name:"podman" enum:"auto,on,off" placeholder:"auto|on|off" help:"Podman mode: auto (enable if compatible and found), on (require), or off (disable). Enabled modes provide a lazy API socket. Read-only workspaces and required Landlock disable auto. Default: auto."`
 	WorkspaceMode          *string    `name:"workspace-mode" enum:"write-through,copy-on-write,read-only" placeholder:"write-through|copy-on-write|read-only" help:"Workspace behavior: write-through (persist changes), copy-on-write (discard changes), or read-only. Default: write-through."`
 	Landlock               *string    `name:"landlock" enum:"auto,required,off" placeholder:"auto|required|off" help:"Landlock filesystem enforcement: auto (when compatible), required (fail closed), or off. Default: auto."`
+	Seccomp                *string    `name:"seccomp" enum:"auto,required,off" placeholder:"auto|required|off" help:"Seccomp syscall filtering: auto (enable when supported), required (fail closed), or off. Default: auto."`
 	ROBind                 stringList `name:"ro-bind" type:"path" placeholder:"PATH" help:"Bind an additional existing host path read-only; repeatable."`
 	RWBind                 stringList `name:"rw-bind" type:"path" placeholder:"PATH" help:"Bind an additional existing host path read-write; repeatable."`
 	Env                    stringList `name:"env" placeholder:"NAME[=VALUE]" help:"Set an environment variable, or inherit NAME from the host when VALUE is omitted; repeatable."`

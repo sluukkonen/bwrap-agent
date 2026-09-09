@@ -91,6 +91,7 @@ network_allow = ["https://registry.example.com", "https://*.packages.example.com
 podman = "auto"
 workspace_mode = "write-through"
 landlock = "auto"
+seccomp = "auto"
 tty = "auto"
 
 publish = ["13000:3000"]
@@ -201,12 +202,18 @@ Do not bind the host Podman socket into this sandbox. Podman's API is deliberate
                            persist, discard, or reject workspace writes
 --landlock auto|required|off
                            select filesystem enforcement (default: auto)
+--seccomp auto|required|off
+                           select syscall filtering (default: auto)
 --[no-]agent-config        expose detected host agent config read-only and seed credentials
 --no-project-config       skip .bwrap-agent.toml
 --no-config               skip user and project configuration
 ```
 
 The launcher clears the inherited environment. It keeps terminal and locale settings, but credentials, SSH agent sockets, cloud variables, and tokens are not forwarded unless explicitly requested with `--env NAME` or an `{ inherit = true }` config entry. `BWRAP_AGENT_PODMAN` is launcher-owned and always reports the resolved integration state as `0` or `1`; environment configuration cannot redefine or remove it.
+
+Seccomp filtering defaults to `auto`. Supported amd64 and arm64 hosts use a conservative `development` denylist when Podman is disabled and a smaller `podman` denylist that preserves container namespace and mount operations when it is enabled. `--seccomp required` fails closed when filtering is unavailable, while `--seccomp off` is the compatibility escape hatch for software that needs a blocked syscall or a non-native ABI. Filtered runs deliberately reject 32-bit and x32 syscall ABIs; ptrace, perf, io_uring, userfaultfd, Landlock, and application-installed seccomp filters remain available.
+
+Both profiles deny `acct`, kernel module loading and deletion, kexec, `lookup_dcookie`, swapping, and the kernel `syslog` syscall; amd64 also denies `ioperm`, `iopl`, `modify_ldt`, and `uselib`. The `development` profile additionally denies BPF loading, system-clock changes, reboot, kernel keyring operations, quota and file-handle interfaces, chroot, namespace entry and creation, and mount operations. New mount API calls and `clone3` return `ENOSYS` so software can use older fallbacks; `clone` returns `EPERM` only when a `CLONE_NEW*` namespace flag is present. Other denied calls return `EPERM`.
 
 ### Terminal multiplexers
 

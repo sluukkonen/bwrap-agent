@@ -46,7 +46,7 @@ func inspectBubblewrap(path string) (bubblewrapCapabilities, error) {
 	if err != nil {
 		return bubblewrapCapabilities{}, fmt.Errorf("query Bubblewrap capabilities: %w", err)
 	}
-	for _, option := range []string{"--overlay-src", "--tmp-overlay", "--remount-ro", "--disable-userns", "--ro-bind-data", "--perms"} {
+	for _, option := range []string{"--overlay-src", "--tmp-overlay", "--remount-ro", "--disable-userns", "--ro-bind-data", "--perms", "--seccomp"} {
 		if !strings.Contains(string(help), option) {
 			return bubblewrapCapabilities{}, fmt.Errorf("Bubblewrap %s lacks required option %s", version, option)
 		}

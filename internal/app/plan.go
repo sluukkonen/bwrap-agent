@@ -284,6 +284,16 @@ func resolveLandlockMode(mode string) (string, error) {
 	return mode, nil
 }
 
+func resolveSeccompMode(mode string) (string, error) {
+	if mode == "" {
+		mode = "auto"
+	}
+	if mode != "auto" && mode != "required" && mode != "off" {
+		return "", fmt.Errorf("invalid seccomp mode %q: expected auto, required, or off", mode)
+	}
+	return mode, nil
+}
+
 func terminalEnv(source []string) map[string]string {
 	selected := map[string]string{}
 	for _, assignment := range source {
@@ -407,6 +417,11 @@ func openSandboxInit(path string) (*os.File, error) {
 }
 
 func launchBubblewrap(argv []string) int {
+	seccompProfile := ""
+	if len(argv) >= 2 && argv[0] == "--seccomp-profile" {
+		seccompProfile = argv[1]
+		argv = argv[2:]
+	}
 	separator := -1
 	for index, argument := range argv {
 		if argument == "--" {
@@ -430,7 +445,12 @@ func launchBubblewrap(argv []string) int {
 		return 126
 	}
 	paths := append([]string{self}, sources...)
-	files := make([]*os.File, 0, len(paths))
+	files := make([]*os.File, 0, len(paths)+1)
+	defer func() {
+		for _, file := range files {
+			_ = file.Close()
+		}
+	}()
 	for _, path := range paths {
 		file, err := openSandboxInit(path)
 		if err != nil {
@@ -439,11 +459,14 @@ func launchBubblewrap(argv []string) int {
 		}
 		files = append(files, file)
 	}
-	defer func() {
-		for _, file := range files {
-			_ = file.Close()
+	if seccompProfile != "" {
+		filter, err := openSeccompFilter(seccompProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare seccomp profile: %v\n", err)
+			return 126
 		}
-	}()
+		files = append(files, filter)
+	}
 	for index, file := range files {
 		sourceFD, targetFD := int(file.Fd()), 3+index
 		if sourceFD == targetFD {
@@ -556,6 +579,11 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		return LaunchPlan{}, err
 	}
 	opts.Landlock = landlockMode
+	seccompMode, err := resolveSeccompMode(opts.Seccomp)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	opts.Seccomp = seccompMode
 	opts.NetworkAllow, err = normalizeNetworkAllowList(opts.NetworkAllow)
 	if err != nil {
 		return LaunchPlan{}, fmt.Errorf("network allowlist: %w", err)
@@ -607,6 +635,14 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	landlockStatus, err := determineLandlockStatus(landlockMode, podmanBin != "", queryLandlockABI)
 	if err != nil {
 		return LaunchPlan{}, err
+	}
+	seccompStatus, seccompWarning, err := determineSeccompStatus(seccompMode, podmanBin != "", querySeccompSupport)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	var warnings []string
+	if seccompWarning != "" {
+		warnings = append(warnings, seccompWarning)
 	}
 	var pastaBin string
 	if opts.Network == "private" {
@@ -876,6 +912,9 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	}
 	sort.Strings(names)
 	bwrap = mounts.finish()
+	if seccompStatus.Effective == "enabled" {
+		bwrap = append(bwrap, "--seccomp", strconv.Itoa(4+len(executableSources)))
+	}
 	for _, name := range names {
 		bwrap = append(bwrap, "--setenv", name, environment[name])
 	}
@@ -922,14 +961,19 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if opts.Network == "private" {
 		proxyPort = proxyGuestPort
 	}
+	launcher := []string{self, internalLaunchMode}
+	if seccompStatus.Effective == "enabled" {
+		launcher = append(launcher, "--seccomp-profile", seccompStatus.Profile)
+	}
+	launcher = append(append(launcher, executableSources...), "--")
 	return LaunchPlan{Instance: instance, Project: project, State: state, WorkspaceMode: workspaceMode,
-		Landlock: landlockStatus, Bubblewrap: bwrapInfo.BubblewrapStatus,
+		Landlock: landlockStatus, Seccomp: seccompStatus, Bubblewrap: bwrapInfo.BubblewrapStatus,
 		NetworkAllow: append([]string{}, opts.NetworkAllow...), ProxyGuestPort: proxyPort,
 		Command: command, Outer: outer,
-		Launcher: append(append([]string{self, internalLaunchMode}, executableSources...), "--"),
+		Launcher: launcher,
 		Bwrap:    bwrap, Ports: ports, LaunchEnv: launchEnv,
 		TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: protectedPaths,
-		ControlCleanup: controlCleanup}, nil
+		ControlCleanup: controlCleanup, Warnings: warnings}, nil
 }
 
 func boolString(value bool) string {

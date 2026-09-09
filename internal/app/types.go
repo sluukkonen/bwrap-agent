@@ -32,6 +32,7 @@ type LaunchPlan struct {
 	State          string
 	WorkspaceMode  string
 	Landlock       LandlockStatus
+	Seccomp        SeccompStatus
 	Bubblewrap     BubblewrapStatus
 	NetworkAllow   []string
 	ProxyGuestPort int
@@ -52,6 +53,12 @@ type LandlockStatus struct {
 	Requested string `json:"requested"`
 	Effective string `json:"effective"`
 	ABI       int    `json:"abi,omitempty"`
+}
+
+type SeccompStatus struct {
+	Requested string `json:"requested"`
+	Effective string `json:"effective"`
+	Profile   string `json:"profile,omitempty"`
 }
 
 type BubblewrapStatus struct {
@@ -98,6 +105,7 @@ func writePlanJSON(w io.Writer, p LaunchPlan) error {
 		State          string            `json:"state"`
 		WorkspaceMode  string            `json:"workspace_mode"`
 		Landlock       LandlockStatus    `json:"landlock"`
+		Seccomp        SeccompStatus     `json:"seccomp"`
 		Bubblewrap     BubblewrapStatus  `json:"bubblewrap"`
 		NetworkAllow   []string          `json:"network_allow"`
 		ProxyGuestPort int               `json:"proxy_guest_port,omitempty"`
@@ -111,7 +119,7 @@ func writePlanJSON(w io.Writer, p LaunchPlan) error {
 		Argv           []string          `json:"argv"`
 	}{
 		Instance: p.Instance, Project: p.Project, State: p.State, WorkspaceMode: p.WorkspaceMode,
-		Landlock: p.Landlock, Bubblewrap: p.Bubblewrap,
+		Landlock: p.Landlock, Seccomp: p.Seccomp, Bubblewrap: p.Bubblewrap,
 		NetworkAllow: append([]string{}, p.NetworkAllow...), ProxyGuestPort: p.ProxyGuestPort,
 		Command: p.Command, Ports: p.Ports, Environment: p.LaunchEnv, TTY: p.TTY,
 		ConfigFiles: configFiles, ProtectedPaths: append([]string{}, p.ProtectedPaths...),

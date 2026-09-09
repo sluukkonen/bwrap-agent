@@ -53,6 +53,17 @@ default_project="$test_root/default-project"
 mkdir "$default_project"
 cd "$default_project"
 
+seccomp_plan=$("$binary" run --instance integration-seccomp-plan --podman off --seccomp required --network host --tty never --dry-run /bin/true)
+printf '%s\n' "$seccomp_plan" | grep -q '"effective": "enabled"'
+printf '%s\n' "$seccomp_plan" | grep -q '"profile": "development"'
+printf '%s\n' "$seccomp_plan" | grep -q -- '--seccomp'
+seccomp_off_plan=$("$binary" run --instance integration-seccomp-off --podman off --seccomp off --network host --tty never --dry-run /bin/true)
+printf '%s\n' "$seccomp_off_plan" | grep -q '"effective": "off"'
+if printf '%s\n' "$seccomp_off_plan" | grep -q -- '--seccomp'; then
+    exit 1
+fi
+"$binary" run --instance integration-seccomp-off-run --podman off --seccomp off --network host --tty never /bin/true
+
 managed_home="$test_root/managed-home"
 managed_project="$test_root/managed-project"
 mkdir "$managed_project"
@@ -79,7 +90,7 @@ test "$(BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list --json)" 
     --podman off \
     --network host \
     --tty never \
-    /bin/sh -ec 'test -w "$PWD"; test ! -e "$HOME/.ssh"; printf "host-ok\n"'
+    /bin/sh -ec 'grep -Eq "^Seccomp:[[:space:]]+2$" /proc/self/status; test -w "$PWD"; test ! -e "$HOME/.ssh"; printf "host-ok\n"'
 
 "$binary" \
     run \
@@ -365,7 +376,7 @@ test -e "$BWRAP_AGENT_STATE_HOME/instances/integration-read-only/state/home/stat
 	--env BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES=invalid \
     --network host \
     --tty never \
-	/bin/sh -ec 'test "$BWRAP_AGENT_PODMAN" = 1; test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"; test -n "$DOCKER_HOST"; test -z "${CONTAINER_HOST:-}"; test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; ! pgrep -x podman >/dev/null; podman info >/dev/null; ! pgrep -x podman >/dev/null; printf "podman-ok\n"'
+	/bin/sh -ec 'grep -Eq "^Seccomp:[[:space:]]+2$" /proc/self/status; test "$BWRAP_AGENT_PODMAN" = 1; test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"; test -n "$DOCKER_HOST"; test -z "${CONTAINER_HOST:-}"; test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; ! pgrep -x podman >/dev/null; podman info >/dev/null; ! pgrep -x podman >/dev/null; printf "podman-ok\n"'
 test ! -e "$BWRAP_AGENT_STATE_HOME/instances/integration-podman/state/run/libpod/tmp/pause.pid"
 
 "$binary" \

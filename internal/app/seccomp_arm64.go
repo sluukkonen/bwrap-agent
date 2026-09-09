@@ -1,0 +1,48 @@
+//go:build linux && arm64
+
+package app
+
+import "golang.org/x/sys/unix"
+
+var nativeSeccompArchitecture = seccompArchitecture{
+	supported: true,
+	audit:     unix.AUDIT_ARCH_AARCH64,
+	syscalls: map[string]uint32{
+		"acct":              unix.SYS_ACCT,
+		"add_key":           unix.SYS_ADD_KEY,
+		"bpf":               unix.SYS_BPF,
+		"chroot":            unix.SYS_CHROOT,
+		"clock_settime":     unix.SYS_CLOCK_SETTIME,
+		"clone":             unix.SYS_CLONE,
+		"clone3":            unix.SYS_CLONE3,
+		"delete_module":     unix.SYS_DELETE_MODULE,
+		"finit_module":      unix.SYS_FINIT_MODULE,
+		"fsconfig":          unix.SYS_FSCONFIG,
+		"fsmount":           unix.SYS_FSMOUNT,
+		"fsopen":            unix.SYS_FSOPEN,
+		"fspick":            unix.SYS_FSPICK,
+		"init_module":       unix.SYS_INIT_MODULE,
+		"kexec_file_load":   unix.SYS_KEXEC_FILE_LOAD,
+		"kexec_load":        unix.SYS_KEXEC_LOAD,
+		"keyctl":            unix.SYS_KEYCTL,
+		"lookup_dcookie":    unix.SYS_LOOKUP_DCOOKIE,
+		"mount":             unix.SYS_MOUNT,
+		"mount_setattr":     unix.SYS_MOUNT_SETATTR,
+		"move_mount":        unix.SYS_MOVE_MOUNT,
+		"name_to_handle_at": unix.SYS_NAME_TO_HANDLE_AT,
+		"open_by_handle_at": unix.SYS_OPEN_BY_HANDLE_AT,
+		"open_tree":         unix.SYS_OPEN_TREE,
+		"pivot_root":        unix.SYS_PIVOT_ROOT,
+		"quotactl":          unix.SYS_QUOTACTL,
+		"quotactl_fd":       unix.SYS_QUOTACTL_FD,
+		"reboot":            unix.SYS_REBOOT,
+		"request_key":       unix.SYS_REQUEST_KEY,
+		"setns":             unix.SYS_SETNS,
+		"settimeofday":      unix.SYS_SETTIMEOFDAY,
+		"swapoff":           unix.SYS_SWAPOFF,
+		"swapon":            unix.SYS_SWAPON,
+		"syslog":            unix.SYS_SYSLOG,
+		"umount2":           unix.SYS_UMOUNT2,
+		"unshare":           unix.SYS_UNSHARE,
+	},
+}

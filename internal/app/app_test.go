@@ -249,8 +249,8 @@ func TestCLIParsingAndPassthrough(t *testing.T) {
 	if opts.Podman != "auto" {
 		t.Fatalf("podman mode = %q, want auto", opts.Podman)
 	}
-	if opts.WorkspaceMode != "write-through" || opts.Landlock != "auto" {
-		t.Fatalf("workspace/Landlock defaults = %q/%q", opts.WorkspaceMode, opts.Landlock)
+	if opts.WorkspaceMode != "write-through" || opts.Landlock != "auto" || opts.Seccomp != "auto" {
+		t.Fatalf("workspace/Landlock/seccomp defaults = %q/%q/%q", opts.WorkspaceMode, opts.Landlock, opts.Seccomp)
 	}
 	stdout.Reset()
 	stderr.Reset()
@@ -268,7 +268,7 @@ func TestCLIParsingAndPassthrough(t *testing.T) {
 }
 
 func TestCLIRejectsInvalidInputs(t *testing.T) {
-	for _, args := range [][]string{{"--"}, {"opencode"}, {"--init-config"}, {"config"}, {"run"}, {"run", "--podman", "invalid", "/bin/true"}, {"run", "--workspace-mode", "invalid", "/bin/true"}, {"run", "--landlock", "invalid", "/bin/true"}, {"run", "--network-allow", "ssh://example.com", "/bin/true"}, {"run", "--network", "host", "--network-allow", "https://example.com", "/bin/true"}, {"run", "--no-podman", "/bin/true"}, {"run", "--podman-socket", "/bin/true"}, {"run", "--no-git-common-dir", "/bin/true"}, {"run", "--write-policy", "workspace", "/bin/true"}} {
+	for _, args := range [][]string{{"--"}, {"opencode"}, {"--init-config"}, {"config"}, {"run"}, {"run", "--podman", "invalid", "/bin/true"}, {"run", "--workspace-mode", "invalid", "/bin/true"}, {"run", "--landlock", "invalid", "/bin/true"}, {"run", "--seccomp", "invalid", "/bin/true"}, {"run", "--network-allow", "ssh://example.com", "/bin/true"}, {"run", "--network", "host", "--network-allow", "https://example.com", "/bin/true"}, {"run", "--no-podman", "/bin/true"}, {"run", "--podman-socket", "/bin/true"}, {"run", "--no-git-common-dir", "/bin/true"}, {"run", "--write-policy", "workspace", "/bin/true"}} {
 		var stdout, stderr bytes.Buffer
 		_, code, err := parseOptions(args, &stdout, &stderr)
 		if err == nil || code != 2 {
@@ -314,6 +314,7 @@ func TestHelpIsHandledWithoutBuildingPlan(t *testing.T) {
 		"--podman=auto|on|off",
 		"--workspace-mode=write-through|copy-on-write|read-only",
 		"--landlock=auto|required|off",
+		"--seccomp=auto|required|off",
 		"--allow-control-file-writes",
 		"--tty=auto|always|never",
 		"private (HTTP/HTTPS allowlist enforced), host (shared and unrestricted), or none (disabled)",
@@ -438,7 +439,7 @@ func TestTerminalEnvironment(t *testing.T) {
 func TestBuildPlanWithoutPodman(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	plan, err := BuildPlan(Options{
-		Project: ".", Instance: "plan-test", Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"},
+		Project: ".", Instance: "plan-test", Network: "host", Podman: "off", Seccomp: "required", TTY: "never", Command: []string{"/bin/true"},
 		Env: []string{"BWRAP_AGENT_PODMAN=1"},
 	})
 	if err != nil {
@@ -453,6 +454,32 @@ func TestBuildPlanWithoutPodman(t *testing.T) {
 	joined := strings.Join(plan.Bwrap, "\x00")
 	if strings.Contains(joined, "/bin/sh") || !strings.Contains(joined, internalInitMode) || !strings.Contains(joined, "--new-session") {
 		t.Fatalf("unexpected bwrap argv: %#v", plan.Bwrap)
+	}
+	if plan.Seccomp.Effective != "enabled" || plan.Seccomp.Profile != seccompProfileDevelopment || !strings.Contains(joined, "--seccomp\x004") {
+		t.Fatalf("development seccomp profile is missing: %#v", plan)
+	}
+	if len(plan.Launcher) != 5 || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfileDevelopment || plan.Launcher[4] != "--" {
+		t.Fatalf("development seccomp descriptor source is missing: %#v", plan.Launcher)
+	}
+}
+
+func TestSeccompOffOmitsFilter(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "seccomp-off", Network: "host", Podman: "off", Seccomp: "off",
+		TTY: "never", Command: []string{"/bin/true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Seccomp.Effective != "off" || plan.Seccomp.Profile != "" {
+		t.Fatalf("seccomp status = %#v", plan.Seccomp)
+	}
+	if strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--seccomp") {
+		t.Fatalf("disabled seccomp remained in Bubblewrap plan: %#v", plan.Bwrap)
+	}
+	if len(plan.Launcher) != 3 || plan.Launcher[2] != "--" {
+		t.Fatalf("disabled seccomp remained in launcher plan: %#v", plan.Launcher)
 	}
 }
 
@@ -653,7 +680,7 @@ func TestReadOnlyGitOptionalLocksCanBeOverridden(t *testing.T) {
 func TestEnabledPodmanPlan(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	base := Options{
-		Project: ".", Instance: "podman-plan", Network: "host", Podman: "on", TTY: "never", Command: []string{"/bin/true"},
+		Project: ".", Instance: "podman-plan", Network: "host", Podman: "on", Seccomp: "required", TTY: "never", Command: []string{"/bin/true"},
 		UnsetEnv: []string{"BWRAP_AGENT_PODMAN"},
 	}
 	plan, err := BuildPlan(base)
@@ -676,6 +703,9 @@ func TestEnabledPodmanPlan(t *testing.T) {
 		t.Fatalf("sandbox runtime directory is not private and short: %#v", plan.Bwrap)
 	}
 	joined := strings.Join(plan.Bwrap, "\x00")
+	if plan.Seccomp.Effective != "enabled" || plan.Seccomp.Profile != seccompProfilePodman || !strings.Contains(joined, "--seccomp\x004") {
+		t.Fatalf("Podman seccomp profile is missing: %#v", plan)
+	}
 	if !strings.Contains(joined, "/run/bwrap-agent/init\x00"+internalPodmanInitMode) || strings.Contains(joined, "/run/bwrap-agent/init\x00"+internalInitMode) {
 		t.Fatalf("Podman plan did not select the protected init mode: %#v", plan.Bwrap)
 	}
@@ -690,7 +720,7 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if len(plan.ProtectedPaths) == 0 {
 		t.Fatal("write-through Podman plan omitted protected control paths")
 	}
-	if !strings.Contains(joined, "--perms\x000555\x00--ro-bind-data\x003\x00/run/bwrap-agent/init") || strings.Contains(joined, "--file") || len(plan.Launcher) != 3 || plan.Launcher[1] != internalLaunchMode || plan.Launcher[2] != "--" {
+	if !strings.Contains(joined, "--perms\x000555\x00--ro-bind-data\x003\x00/run/bwrap-agent/init") || strings.Contains(joined, "--file") || len(plan.Launcher) != 5 || plan.Launcher[1] != internalLaunchMode || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfilePodman || plan.Launcher[4] != "--" {
 		t.Fatalf("fd-backed sandbox init is missing: %#v", plan.Bwrap)
 	}
 	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "config", "containers", "containers.conf"))
@@ -713,7 +743,7 @@ func TestPodmanPlanInjectsExternalCommandReadOnly(t *testing.T) {
 	}
 	plan, err := BuildPlan(Options{
 		Project: ".", Instance: "podman-external-command", Network: "host", Podman: "on",
-		TTY: "never", Command: []string{executable},
+		Seccomp: "required", TTY: "never", Command: []string{executable},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -722,7 +752,10 @@ func TestPodmanPlanInjectsExternalCommandReadOnly(t *testing.T) {
 	if !strings.Contains(joined, "--perms\x000555\x00--ro-bind-data\x004\x00/run/bwrap-agent/command") {
 		t.Fatalf("external executable is not injected read-only: %#v", plan.Bwrap)
 	}
-	if len(plan.Launcher) != 4 || plan.Launcher[2] != executable || plan.Launcher[3] != "--" {
+	if !strings.Contains(joined, "--seccomp\x005") {
+		t.Fatalf("seccomp descriptor collided with external executable: %#v", plan.Bwrap)
+	}
+	if len(plan.Launcher) != 6 || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfilePodman || plan.Launcher[4] != executable || plan.Launcher[5] != "--" {
 		t.Fatalf("external executable descriptor source missing: %#v", plan.Launcher)
 	}
 }
