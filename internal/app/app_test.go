@@ -902,6 +902,9 @@ func TestPrivatePortsBindHostLoopback(t *testing.T) {
 	if strings.Contains(joined, "--host-lo-to-ns-lo") || strings.Contains(joined, "--dns-forward") {
 		t.Fatalf("private plan exposes unintended host networking: %#v", plan.Outer)
 	}
+	if len(plan.Launcher) < 5 || plan.Launcher[0] != "/bin/sh" || plan.Launcher[1] != "-c" || plan.Launcher[2] != `exec "$0" "$@"` || plan.Launcher[4] != internalLaunchMode {
+		t.Fatalf("private launcher does not use the system trampoline: %#v", plan.Launcher)
+	}
 	proxyURL := fmt.Sprintf("http://127.0.0.1:%d", proxyGuestPort)
 	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 		if plan.LaunchEnv[name] != proxyURL {
@@ -910,6 +913,36 @@ func TestPrivatePortsBindHostLoopback(t *testing.T) {
 	}
 	if plan.ProxyGuestPort != proxyGuestPort || !reflect.DeepEqual(plan.NetworkAllow, []string{"https://registry.example"}) {
 		t.Fatalf("private policy metadata = %#v", plan)
+	}
+}
+
+func TestSystemShellIgnoresPATH(t *testing.T) {
+	directory := t.TempDir()
+	untrusted := filepath.Join(directory, "sh")
+	if err := os.WriteFile(untrusted, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+
+	found, err := requireSystemShell()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != "/bin/sh" {
+		t.Fatalf("system shell = %q, want /bin/sh", found)
+	}
+}
+
+func TestHostPlanDoesNotUseLauncherTrampoline(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	plan, err := BuildPlan(Options{
+		Project: ".", Instance: "host-launcher", Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Launcher) < 2 || plan.Launcher[1] != internalLaunchMode || filepath.Base(plan.Launcher[0]) == "sh" {
+		t.Fatalf("host launcher unexpectedly uses a trampoline: %#v", plan.Launcher)
 	}
 }
 

@@ -16,6 +16,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 fixture_root="$script_dir/fixtures"
 test_root=$(mktemp -d /tmp/bwrap-agent-integration.XXXXXX)
 background_pids=
+home_state_root=
 cleanup() {
     for pid in $background_pids; do
         kill "$pid" 2>/dev/null || :
@@ -29,6 +30,9 @@ cleanup() {
         fi
     else
         rm -rf -- "$test_root" 2>/dev/null || echo "warning: could not remove $test_root" >&2
+    fi
+    if [ -n "$home_state_root" ]; then
+        rm -rf -- "$home_state_root" 2>/dev/null || echo "warning: could not remove $home_state_root" >&2
     fi
 }
 trap cleanup EXIT HUP INT TERM
@@ -121,6 +125,33 @@ BWRAP_AGENT_STATE_HOME="$test_root/state:home" "$binary" \
         test "$(cat "$HOME/reachability-probe")" = reachable
         printf "passwd-home-alias-ok\n"
     '
+
+mkdir -p "$HOME/.local/state"
+home_state_root=$(mktemp -d "$HOME/.local/state/bwrap-agent-integration.XXXXXX")
+BWRAP_AGENT_STATE_HOME="$home_state_root" "$binary" \
+    run \
+    --project "$default_project" \
+    --instance integration-private-home-state \
+    --podman off \
+    --network private \
+    --network-allow https://example.com \
+    --tty never \
+    /bin/true
+printf 'private-home-state-ok\n'
+
+equals_binary_dir="$test_root/build=debug"
+mkdir "$equals_binary_dir"
+cp "$binary" "$equals_binary_dir/bwrap-agent"
+"$equals_binary_dir/bwrap-agent" \
+    run \
+    --project "$default_project" \
+    --instance integration-equals-launcher \
+    --podman off \
+    --network private \
+    --network-allow https://example.com \
+    --tty never \
+    /bin/true
+printf 'equals-launcher-ok\n'
 
 "$binary" \
     run \

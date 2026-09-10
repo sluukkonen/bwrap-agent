@@ -244,6 +244,21 @@ func requireProgram(name string) (string, error) {
 	return absolute, nil
 }
 
+func requireSystemShell() (string, error) {
+	const path = "/bin/sh"
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("required system shell unavailable at %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("required system shell is not an executable regular file: %s", path)
+	}
+	if err := unix.Access(path, unix.X_OK); err != nil {
+		return "", fmt.Errorf("required system shell is not executable at %s: %w", path, err)
+	}
+	return path, nil
+}
+
 func resolvePodman(mode string) (string, error) {
 	if mode == "" {
 		mode = "auto"
@@ -640,9 +655,13 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if seccompWarning != "" {
 		warnings = append(warnings, seccompWarning)
 	}
-	var pastaBin string
+	var pastaBin, launcherTrampoline string
 	if opts.Network == "private" {
 		pastaBin, err = requireProgram("pasta")
+		if err != nil {
+			return LaunchPlan{}, err
+		}
+		launcherTrampoline, err = requireSystemShell()
 		if err != nil {
 			return LaunchPlan{}, err
 		}
@@ -943,6 +962,14 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		proxyPort = proxyGuestPort
 	}
 	launcher := []string{self, internalLaunchMode}
+	if launcherTrampoline != "" {
+		// Fedora's SELinux policy leaves a user-home executable launched directly
+		// by pasta in pasta_t, which cannot traverse common state-home labels.
+		// A system executable trampoline restores the caller domain before this
+		// launcher reopens descriptor-backed inputs. Pass the launcher as the
+		// shell's quoted $0 so every valid path remains an opaque argument.
+		launcher = append([]string{launcherTrampoline, "-c", `exec "$0" "$@"`}, launcher...)
+	}
 	if seccompStatus.Effective == "enabled" {
 		launcher = append(launcher, "--seccomp-profile", seccompStatus.Profile)
 	}
