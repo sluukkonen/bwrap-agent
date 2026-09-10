@@ -33,13 +33,18 @@ The root begins as an empty tmpfs. The launcher adds:
 | Path | Access | Purpose |
 |---|---|---|
 | `/usr`, legacy lib/bin paths | read-only | host compilers, runtimes, Podman, shell tools |
-| `/etc` | read-only | NSS, TLS, registries, package/tool configuration |
-| `/sys`, `/opt`, `/nix/store` when present | policy-controlled | runtime/tool compatibility; Podman uses the outer rootless sysfs view |
+| selected `/etc` paths | generated/read-only | minimal accounts and NSS, loader configuration, TLS trust, OS metadata, and conditional Podman policy |
+| `/sys` | policy-controlled | Podman uses the outer rootless sysfs view |
+| `/opt`, `/nix/store`, other tool roots | explicit read-only binds | opt-in runtime/tool compatibility |
 | project at its original absolute path | workspace-mode controlled | source and build outputs |
 | managed instance `state/` at its original path | read-write | isolated home, caches, Podman storage |
 | external Git common directory | policy-controlled | make linked worktrees functional |
 | `/proc`, `/dev` | new virtual filesystems | process and minimal device access; only host `/dev/net/tun` is added for nested pasta |
 | `/tmp`, `/var/tmp`, `/run` | private | scratch data and API sockets |
+
+The `/etc` view is assembled from an explicit portable allowlist. `passwd`, `group`, and `nsswitch.conf` are generated with only root, nobody, and the invoking account. Every network mode receives a generated hosts file containing the synthetic sandbox hostname; host mode preserves a snapshot of the host's entries, while private and disconnected modes use only local entries and a generated resolver. Host networking mounts the host resolver, including its exact external symlink target. Loader dispatch, selected Java and Maven runtime configuration, public CA/crypto policy, timezone, operating-system release data, and alternatives are included when present. The public `/var/lib/ca-certificates` trust root is also mounted when present so openSUSE and SLES certificate symlinks remain valid; unrelated `/var` content stays private. Podman-enabled runs additionally receive SELinux/FUSE configuration and only the host container registry and signature-policy files; host container engine/storage/mount configuration and client credentials remain hidden. Generated files use descriptor-backed read-only mounts, so their writable instance-state sources are not aliases of the sandbox files.
+
+Optional tool roots are never discovered or mounted automatically. A user or trusted project configuration must name `/opt`, `/nix/store`, or a narrower required path through `ro_bind`; the same mechanism deliberately extends or overrides the built-in `/etc` view.
 
 Keeping the project's original absolute path avoids breaking absolute symlinks and build metadata. A linked worktree's `.git` file points outside the worktree, so its common Git directory is mounted too. Before granting that extra exposure, the launcher validates the worktree's `commondir` and backlink. External submodule and separate Git directories require `core.worktree` to resolve back to the selected project. Unrelated or malformed pointers fail closed. `write-through` binds validated project and Git paths writable, `copy-on-write` uses invisible temporary OverlayFS upper layers, and `read-only` binds them read-only and sets `GIT_OPTIONAL_LOCKS=0`.
 

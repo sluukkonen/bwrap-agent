@@ -90,7 +90,37 @@ test "$(BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list --json)" 
     --podman off \
     --network host \
     --tty never \
-    /bin/sh -ec 'grep -Eq "^Seccomp:[[:space:]]+2$" /proc/self/status; test -w "$PWD"; test ! -e "$HOME/.ssh"; printf "host-ok\n"'
+    /bin/sh -ec '
+        grep -Eq "^Seccomp:[[:space:]]+2$" /proc/self/status
+        test -w "$PWD"
+        test ! -e "$HOME/.ssh"
+        getent passwd "$(id -u)" >/dev/null
+        getent group "$(id -g)" >/dev/null
+        getent hosts localhost >/dev/null
+        getent hosts "$(hostname)" >/dev/null
+        test -r /etc/os-release
+        test ! -e /etc/shadow
+        test ! -e /etc/machine-id
+        test ! -e /opt
+        test ! -e /nix/store
+        printf "host-ok\n"
+    '
+
+BWRAP_AGENT_STATE_HOME="$test_root/state:home" "$binary" \
+    run \
+    --project "$default_project" \
+    --instance integration-passwd-home \
+    --podman off \
+    --network host \
+    --tty never \
+    /bin/sh -ec '
+        passwd_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+        test "$passwd_home" = /run/bwrap-agent/passwd-home
+        test -d "$passwd_home"
+        printf reachable >"$passwd_home/reachability-probe"
+        test "$(cat "$HOME/reachability-probe")" = reachable
+        printf "passwd-home-alias-ok\n"
+    '
 
 "$binary" \
     run \
@@ -98,7 +128,15 @@ test "$(BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list --json)" 
     --podman off \
     --network private \
     --tty never \
-    /bin/sh -ec 'test -r /etc/resolv.conf; printf "private-ok\n"'
+    /bin/sh -ec '
+        test -r /etc/resolv.conf
+        grep -q "nameserver 169.254.1.1" /etc/resolv.conf
+        getent hosts localhost >/dev/null
+        getent hosts "$(hostname)" >/dev/null
+        test ! -e /etc/shadow
+        test ! -e /etc/machine-id
+        printf "private-ok\n"
+    '
 
 private_port_one="$test_root/private-port-one"
 private_port_two="$test_root/private-port-two"
@@ -376,7 +414,7 @@ test -e "$BWRAP_AGENT_STATE_HOME/instances/integration-read-only/state/home/stat
 	--env BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES=invalid \
     --network host \
     --tty never \
-	/bin/sh -ec 'grep -Eq "^Seccomp:[[:space:]]+2$" /proc/self/status; test "$BWRAP_AGENT_PODMAN" = 1; test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"; test -n "$DOCKER_HOST"; test -z "${CONTAINER_HOST:-}"; test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; ! pgrep -x podman >/dev/null; podman info >/dev/null; ! pgrep -x podman >/dev/null; printf "podman-ok\n"'
+	/bin/sh -ec 'grep -Eq "^Seccomp:[[:space:]]+2$" /proc/self/status; test "$BWRAP_AGENT_PODMAN" = 1; test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"; test -n "$DOCKER_HOST"; test -z "${CONTAINER_HOST:-}"; test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; test "$(getent passwd 0 | cut -d: -f6)" = "$HOME"; test ! -e /etc/subuid; test ! -e /etc/subgid; test ! -e /etc/containers/containers.conf; ! pgrep -x podman >/dev/null; podman info >/dev/null; ! pgrep -x podman >/dev/null; printf "podman-ok\n"'
 test ! -e "$BWRAP_AGENT_STATE_HOME/instances/integration-podman/state/run/libpod/tmp/pause.pid"
 
 "$binary" \
