@@ -56,6 +56,7 @@ func TestSystemEtcUsesExplicitAllowlist(t *testing.T) {
 	machineID := writeEtcFixture(t, root, "machine-id")
 	containersConfig := writeEtcFixture(t, root, "containers/containers.conf")
 	registryConfig := writeEtcFixture(t, root, "containers/registries.conf")
+	mavenConfig := writeEtcFixture(t, root, "m2.conf")
 	maven3Settings := writeEtcFixture(t, root, "maven/settings.xml")
 	maven3Logging := writeEtcFixture(t, root, "maven/logging/simplelogger.properties")
 	maven4Settings := writeEtcFixture(t, root, "maven4/settings.xml")
@@ -74,6 +75,7 @@ func TestSystemEtcUsesExplicitAllowlist(t *testing.T) {
 	}
 	for source, destination := range map[string]string{
 		filepath.Dir(filepath.Dir(javaConfig)): "/etc/java-17-openjdk",
+		mavenConfig:                            "/etc/m2.conf",
 		maven3Settings:                         "/etc/maven/settings.xml",
 		filepath.Dir(maven3Logging):            "/etc/maven/logging",
 	} {
