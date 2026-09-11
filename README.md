@@ -166,6 +166,10 @@ $ ./bin/bwrap-agent run --publish 0:3000 opencode
 
 When Podman is available, the local Podman CLI and Podman Compose work normally and a sandbox-local API socket is provided automatically. Protected `write-through` remains the default, so ordinary project and container writes persist immediately. All containers in an instance are stopped when its agent exits. Require Podman with `--podman on` or disable the integration with `--podman off`.
 
+When Podman integration is enabled, the host's `$XDG_CONFIG_HOME/containers` directory (or `~/.config/containers`) is mounted read-only at the sandbox's corresponding configuration path and `$HOME/.config/containers` for tools that use the home path. Podman reads user settings and drop-ins there, including `registries.conf` and `network.pasta_options` such as `["--ipv4-only"]`. The entire directory is readable, including any credentials stored there; commands cannot update these host files from the sandbox. Referenced files outside the directory are not automatically exposed.
+
+A generated configuration override keeps storage, engine state, volumes, and network configuration inside the instance, selects local Podman with cgroupfs and file events, and preserves copy-on-write labeling behavior. Private networking appends the required proxy environment and pasta loopback mapping to user settings. `CONTAINERS_CONF`, `CONTAINERS_CONF_OVERRIDE`, and `CONTAINERS_STORAGE_CONF` are launcher-owned during startup; `--env` and `--unsetenv` cannot replace these settings. The outer namespace supervisor uses only generated configuration. If the host directory is absent, Podman uses defaults plus the sandbox override.
+
 Docker-compatible clients and Testcontainers use the socket automatically:
 
 ```console

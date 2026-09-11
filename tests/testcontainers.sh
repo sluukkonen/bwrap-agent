@@ -29,7 +29,8 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 export BWRAP_AGENT_STATE_HOME="$test_root/state-home"
 export XDG_CONFIG_HOME="$test_root/xdg-config"
-mkdir "$XDG_CONFIG_HOME"
+mkdir -p "$XDG_CONFIG_HOME/containers"
+printf '[network]\npasta_options = ["--ipv4-only"]\n' >"$XDG_CONFIG_HOME/containers/containers.conf"
 
 is_selected() {
     case ",$selected_languages," in
@@ -93,7 +94,9 @@ done
 if is_selected go; then
     # The fixture is copied to disposable state, so let Go record its resolved
     # checksums there instead of requiring a repository-maintained go.sum.
-    run_fixture go 'command -v go >/dev/null; go run -mod=mod .'
+    go_binary=$(readlink -f "$(command -v go)")
+    go_bin=$(dirname "$go_binary")
+    run_fixture go 'go run -mod=mod .' "$(dirname "$go_bin")" "$go_bin"
 fi
 if is_selected node; then
     if npm_path=$(command -v npm 2>/dev/null) && node_path=$(command -v node 2>/dev/null); then

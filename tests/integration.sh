@@ -568,7 +568,7 @@ if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
             podman volume rm "$volume" >/dev/null
 
             mkdir build-context
-            printf "FROM %s\\nRUN printf build-ok >/build-result\\nCMD [\\\"/bin/cat\\\", \\\"/build-result\\\"]\\n" "$BWRAP_AGENT_TEST_IMAGE" >build-context/Containerfile
+            printf "FROM %s\\nRUN printf build-ok >/build-result\\nCMD [\"/bin/cat\", \"/build-result\"]\\n" "$BWRAP_AGENT_TEST_IMAGE" >build-context/Containerfile
             podman build --tag bwrap-agent-integration-build build-context >/dev/null
             test "$(podman run --rm bwrap-agent-integration-build)" = build-ok
             podman image rm bwrap-agent-integration-build >/dev/null
@@ -613,3 +613,5 @@ if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     test "$(find "$BWRAP_AGENT_STATE_HOME/instances" -maxdepth 1 -type d -name '.deleting-integration-containers-*' -print -quit)" = ""
     printf 'podman-instance-delete-ok\n'
 fi
+
+sh "$script_dir/podman-config.sh" "$binary" "$test_root"

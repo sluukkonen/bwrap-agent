@@ -220,7 +220,7 @@ func TestStateFileRejectsSymlinkedParent(t *testing.T) {
 	if err := os.MkdirAll(outside, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(state, "config")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(state, "podman")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := writeStorageConfig(state); err == nil {
@@ -754,7 +754,7 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if !strings.Contains(joined, "--perms\x000555\x00--ro-bind-data\x003\x00/run/bwrap-agent/init") || strings.Contains(joined, "--file") || len(plan.Launcher) != 9 || plan.Launcher[1] != internalLaunchMode || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfilePodman || plan.Launcher[8] != "--" {
 		t.Fatalf("fd-backed sandbox init is missing: %#v", plan.Bwrap)
 	}
-	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "config", "containers", "containers.conf"))
+	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "podman", "config", "containers.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -820,7 +820,7 @@ func TestCopyOnWritePodmanDisablesNestedSELinuxLabeling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "config", "containers", "containers.conf"))
+	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "podman", "config", "containers.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,7 +835,7 @@ func TestPrivatePodmanPlanConfiguresContainerProxyRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "config", "containers", "containers.conf"))
+	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "podman", "config", "containers.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -831,7 +831,9 @@ func stopVerifiedPodmanPauseProcess(root, expectedRoot string) error {
 		return fmt.Errorf("inspect Podman pause process %d: %w", pid, err)
 	}
 	if !podmanPauseEnvironmentMatches(environment, filepath.Join(expectedRoot, "state", "run"),
-		filepath.Join(expectedRoot, "state", "config", "containers", "storage.conf")) {
+		filepath.Join(expectedRoot, "state", "podman", "config", "storage.conf")) &&
+		!podmanPauseEnvironmentMatches(environment, filepath.Join(expectedRoot, "state", "run"),
+			filepath.Join(expectedRoot, "state", "config", "containers", "storage.conf")) {
 		return removePIDFile()
 	}
 	if err := unix.PidfdSendSignal(pidfd, unix.SIGTERM, nil, 0); errors.Is(err, unix.ESRCH) {

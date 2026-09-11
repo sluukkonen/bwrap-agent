@@ -333,45 +333,6 @@ func envValue(source []string, name, fallback string) string {
 	return fallback
 }
 
-func writeStorageConfig(state string) (string, error) {
-	if _, err := ensureStateDirectory(state, "config/containers", 0o700); err != nil {
-		return "", err
-	}
-	graphRoot, err := ensureStateDirectory(state, "podman/storage", 0o700)
-	if err != nil {
-		return "", err
-	}
-	runRoot, err := ensureStateDirectory(state, "run/containers", 0o700)
-	if err != nil {
-		return "", err
-	}
-	graphJSON, _ := json.Marshal(graphRoot)
-	runJSON, _ := json.Marshal(runRoot)
-	content := fmt.Sprintf("[storage]\ndriver = \"overlay\"\ngraphroot = %s\nrunroot = %s\n\n[storage.options.overlay]\nignore_chown_errors = \"false\"\n", graphJSON, runJSON)
-	return writeStateFile(state, "config/containers/storage.conf", []byte(content), 0o600)
-}
-
-func writeContainersConfig(state string, privateNetwork, disableLabeling bool) (string, error) {
-	containerConfig := ""
-	if disableLabeling {
-		// A Bubblewrap tmp-overlay has a private mount label that nested SELinux
-		// containers cannot relabel. The outer sandbox remains confined, while
-		// the disposable workspace supplies the container write boundary.
-		containerConfig = "[containers]\nlabel = false\n\n"
-	}
-	if !privateNetwork {
-		content := []byte(containerConfig + "[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"file\"\n")
-		return writeStateFile(state, "config/containers/containers.conf", content, 0o600)
-	}
-	containerProxy := fmt.Sprintf("http://%s:%d", proxyContainerHostname, proxyContainerPort)
-	labelSetting := ""
-	if disableLabeling {
-		labelSetting = "label = false\n"
-	}
-	content := []byte(fmt.Sprintf("[containers]\n%sbase_hosts_file = \"none\"\nhttp_proxy = false\nenv = [\"HTTP_PROXY=%s\", \"HTTPS_PROXY=%s\", \"http_proxy=%s\", \"https_proxy=%s\", \"NO_PROXY=localhost,127.0.0.1,::1\", \"no_proxy=localhost,127.0.0.1,::1\"]\n\n[network]\npasta_options = [\"--map-host-loopback\", \"%s\"]\n\n[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"file\"\n", labelSetting, containerProxy, containerProxy, containerProxy, containerProxy, proxyContainerAddress))
-	return writeStateFile(state, "config/containers/containers.conf", content, 0o600)
-}
-
 func resolveCommand(context agentContext, requested []string, adapter *agentAdapter) ([]string, agentSetup, error) {
 	found, err := exec.LookPath(requested[0])
 	if err != nil {
@@ -627,13 +588,14 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	var storageConfig string
+	var storageConfig, containersConfig string
 	if podmanBin != "" {
 		storageConfig, err = writeStorageConfig(state)
 		if err != nil {
 			return LaunchPlan{}, err
 		}
-		if _, err := writeContainersConfig(state, opts.Network == "private", workspaceMode == "copy-on-write"); err != nil {
+		containersConfig, err = writeContainersConfig(state, opts.Network == "private", workspaceMode == "copy-on-write")
+		if err != nil {
 			return LaunchPlan{}, err
 		}
 	}
@@ -670,6 +632,18 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	agentContext := agentContext{
 		state: state, project: project, gitCommon: identity.GitCommon,
 		rwBind: identity.RWBind, hostEnv: os.Environ(), config: !opts.NoAgentConfig,
+	}
+	var podmanMount agentMount
+	if podmanBin != "" {
+		podmanMount, err = preparePodmanConfigMount(agentContext)
+		if err != nil {
+			return LaunchPlan{}, err
+		}
+		// containers/image versions that ignore XDG_CONFIG_HOME look here for
+		// registries.conf, policy.json, and related user configuration.
+		if err := validateAgentStateMountpoint(state, filepath.Join(state, "home", ".config", "containers"), podmanMount.Source); err != nil {
+			return LaunchPlan{}, err
+		}
 	}
 	agent, err := prepareAgent(adapter, agentContext)
 	if err != nil {
@@ -749,6 +723,10 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		// alive for the full launch, so neither it nor nested Podman commands
 		// need a persistent pause process.
 		environment["PODMAN_NO_PAUSE_PROCESS"] = "1"
+		// These paths belong to the instance, regardless of host or --env settings.
+		delete(environment, "CONTAINERS_CONF")
+		environment["CONTAINERS_CONF_OVERRIDE"] = containersConfig
+		environment["CONTAINERS_STORAGE_CONF"] = storageConfig
 	}
 	// Never accept a policy payload from configuration or the host environment.
 	// Enabled Landlock replaces it below with a launcher-generated allowlist;
@@ -887,6 +865,10 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	for _, bind := range agent.Mounts {
 		mounts.mount("--ro-bind", bind.Source, bind.Destination)
 	}
+	if podmanBin != "" {
+		mounts.mount("--ro-bind", podmanMount.Source, podmanMount.Destination)
+		mounts.mount("--ro-bind", podmanMount.Source, filepath.Join(state, "home", ".config", "containers"))
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return LaunchPlan{}, err
@@ -925,6 +907,11 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	for _, name := range names {
 		bwrap = append(bwrap, "--setenv", name, environment[name])
 	}
+	if podmanBin != "" {
+		// The supervisor uses only our generated configuration. Its CONTAINERS_CONF
+		// must not suppress user configuration in the sandbox.
+		bwrap = append(bwrap, "--unsetenv", "CONTAINERS_CONF")
+	}
 	initMode := internalInitMode
 	if podmanBin != "" {
 		initMode = internalPodmanInitMode
@@ -961,7 +948,9 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	// bubblewrap sets the shorter private value encoded in its own argv.
 	launchEnv["XDG_RUNTIME_DIR"] = filepath.Join(state, "run")
 	if storageConfig != "" {
-		launchEnv["CONTAINERS_STORAGE_CONF"] = storageConfig
+		launchEnv["CONTAINERS_CONF"] = containersConfig
+		// Do not load the same file twice and append duplicate pasta options.
+		delete(launchEnv, "CONTAINERS_CONF_OVERRIDE")
 	}
 	proxyPort := 0
 	if opts.Network == "private" {
