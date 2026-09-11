@@ -274,6 +274,7 @@ protected_project="$test_root/protected-project"
 mkdir -p "$protected_project/.opencode/plugins" "$protected_project/.pi/prompts"
 printf '{}\n' >"$protected_project/opencode.json"
 printf '{}\n' >"$protected_project/.opencode/opencode.json"
+printf 'host-ignore\n' >"$protected_project/.opencode/.gitignore"
 printf '{}\n' >"$protected_project/.pi/settings.json"
 printf '# trusted host configuration\n' >"$protected_project/.bwrap-agent.toml"
 git init -q "$protected_project"
@@ -299,6 +300,8 @@ git init -q "$protected_project"
                 exit 1
             fi
         done
+        test "$(cat .opencode/.gitignore)" = host-ignore
+        printf housekeeping >.opencode/.gitignore
         printf editable >.pi/prompts/prompt.md
         printf editable >.mcp.json
         printf "control-paths-ok\n"
@@ -306,6 +309,7 @@ git init -q "$protected_project"
 test "$(cat "$protected_project/ordinary-source")" = source
 test "$(cat "$protected_project/.pi/prompts/prompt.md")" = editable
 test "$(cat "$protected_project/.mcp.json")" = editable
+test "$(cat "$protected_project/.opencode/.gitignore")" = host-ignore
 
 concurrent_project="$test_root/concurrent-control-project"
 mkdir "$concurrent_project"

@@ -45,6 +45,11 @@ func TestWorkspaceProtectsMissingControlPathsWithReadOnlyMasks(t *testing.T) {
 	if strings.Contains(joined, ".mcp.json") {
 		t.Fatalf("Claude-specific .mcp.json was protected: %#v", plan.ProtectedPaths)
 	}
+	gitignore := filepath.Join(project, ".opencode", ".gitignore")
+	gitignoreSource := filepath.Join(filepath.Dir(plan.State), "control-masks", "opencode", ".gitignore")
+	if !strings.Contains(bwrap, "--bind\x00"+gitignoreSource+"\x00"+gitignore) {
+		t.Fatalf("bwrap plan does not provide writable OpenCode housekeeping file: %#v", plan.Bwrap)
+	}
 	var output bytes.Buffer
 	if err := writePlanJSON(&output, plan); err != nil {
 		t.Fatal(err)
@@ -58,6 +63,112 @@ func TestWorkspaceProtectsMissingControlPathsWithReadOnlyMasks(t *testing.T) {
 	if len(dryRun.ProtectedPaths) != len(plan.ProtectedPaths) {
 		t.Fatalf("dry-run protected paths = %#v, want %#v", dryRun.ProtectedPaths, plan.ProtectedPaths)
 	}
+}
+
+func TestOpenCodeGitignoreUsesDisposableWritableMount(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPlan(controlTestOptions(project, "opencode-gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(project, ".opencode", ".gitignore")
+	source := filepath.Join(filepath.Dir(plan.State), "control-masks", "opencode", ".gitignore")
+	joined := strings.Join(plan.Bwrap, "\x00")
+	if !strings.Contains(joined, "--bind\x00"+source+"\x00"+destination) {
+		t.Fatalf("bwrap plan does not mount disposable OpenCode gitignore: %#v", plan.Bwrap)
+	}
+	foundCleanup := false
+	for _, cleanup := range plan.ControlCleanup {
+		if cleanup.path == destination && cleanup.kind == controlPlainFile {
+			foundCleanup = true
+		}
+	}
+	if !foundCleanup {
+		t.Fatalf("missing gitignore mountpoint cleanup: %#v", plan.ControlCleanup)
+	}
+}
+
+func TestOpenCodeGitignoreBackingPreservesHostContents(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	project := t.TempDir()
+	hostContent := []byte("node_modules/\ncustom-cache/\n")
+	if err := os.Mkdir(filepath.Join(project, ".opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(project, ".opencode", ".gitignore"), string(hostContent))
+	plan, err := BuildPlan(controlTestOptions(project, "opencode-existing-gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(filepath.Dir(plan.State), "control-masks", "opencode", ".gitignore")
+	content, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(content, hostContent) {
+		t.Fatalf("OpenCode gitignore backing content = %q, want %q", content, hostContent)
+	}
+	for _, cleanup := range plan.ControlCleanup {
+		if cleanup.path == filepath.Join(project, ".opencode", ".gitignore") {
+			t.Fatalf("existing host gitignore scheduled for cleanup: %#v", plan.ControlCleanup)
+		}
+	}
+}
+
+func TestOpenCodeGitignoreCopyIsSizeLimited(t *testing.T) {
+	t.Run("accepts limit", func(t *testing.T) {
+		t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+		project := t.TempDir()
+		directory := filepath.Join(project, ".opencode")
+		if err := os.Mkdir(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := bytes.Repeat([]byte{'x'}, maxOpenCodeGitignoreSize)
+		if err := os.WriteFile(filepath.Join(directory, ".gitignore"), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		plan, err := BuildPlan(controlTestOptions(project, "opencode-gitignore-at-limit"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := filepath.Join(filepath.Dir(plan.State), "control-masks", "opencode", ".gitignore")
+		info, err := os.Stat(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != maxOpenCodeGitignoreSize {
+			t.Fatalf("OpenCode gitignore backing size = %d, want %d", info.Size(), maxOpenCodeGitignoreSize)
+		}
+	})
+
+	t.Run("rejects oversized sparse file", func(t *testing.T) {
+		t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+		project := t.TempDir()
+		directory := filepath.Join(project, ".opencode")
+		if err := os.Mkdir(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(directory, ".gitignore")
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Truncate(maxOpenCodeGitignoreSize + 1); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		_, err = BuildPlan(controlTestOptions(project, "opencode-gitignore-over-limit"))
+		if err == nil || !strings.Contains(err.Error(), "file exceeds 1048576 bytes") {
+			t.Fatalf("oversized OpenCode gitignore error = %v", err)
+		}
+	})
 }
 
 func TestExistingPiResourcesProtectOnlyControlSurfaces(t *testing.T) {
