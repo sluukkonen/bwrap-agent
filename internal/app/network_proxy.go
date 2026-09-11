@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -21,6 +23,7 @@ type proxyDialer func(context.Context, string, string) (net.Conn, error)
 
 type networkProxy struct {
 	listener    net.Listener
+	dns         *dnsProxy
 	server      *http.Server
 	transport   *http.Transport
 	mu          sync.Mutex
@@ -36,6 +39,23 @@ type networkProxyHandler struct {
 	owner     *networkProxy
 }
 
+type dnsLookup func(context.Context, string, string) ([]netip.Addr, error)
+
+type dnsProxy struct {
+	tcp       net.Listener
+	udp       *net.UDPConn
+	policy    networkPolicy
+	lookup    dnsLookup
+	context   context.Context
+	cancel    context.CancelFunc
+	tokens    chan struct{}
+	mu        sync.Mutex
+	clients   map[net.Conn]struct{}
+	serveWG   sync.WaitGroup
+	requestWG sync.WaitGroup
+	closeOnce sync.Once
+}
+
 func startNetworkProxy(policy networkPolicy) (*networkProxy, error) {
 	return startNetworkProxyWithDial(policy, restrictedDialContext)
 }
@@ -45,7 +65,12 @@ func startNetworkProxyWithDial(policy networkPolicy, dial proxyDialer) (*network
 	if err != nil {
 		return nil, err
 	}
-	proxy := &networkProxy{listener: listener, connections: map[net.Conn]struct{}{}, done: make(chan struct{})}
+	dns, err := startDNSProxy(policy, net.DefaultResolver.LookupNetIP)
+	if err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
+	proxy := &networkProxy{listener: listener, dns: dns, connections: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	proxy.transport = &http.Transport{
 		Proxy:                 nil,
 		DialContext:           dial,
@@ -70,6 +95,10 @@ func (proxy *networkProxy) port() int {
 	return proxy.listener.Addr().(*net.TCPAddr).Port
 }
 
+func (proxy *networkProxy) dnsPort() int {
+	return proxy.dns.tcp.Addr().(*net.TCPAddr).Port
+}
+
 func (proxy *networkProxy) track(connection net.Conn) {
 	proxy.mu.Lock()
 	proxy.connections[connection] = struct{}{}
@@ -88,7 +117,11 @@ func (proxy *networkProxy) Close() error {
 	}
 	var result error
 	proxy.closeOnce.Do(func() {
-		result = proxy.server.Close()
+		serverErr := proxy.server.Close()
+		if errors.Is(serverErr, http.ErrServerClosed) {
+			serverErr = nil
+		}
+		result = errors.Join(serverErr, proxy.dns.Close())
 		proxy.transport.CloseIdleConnections()
 		proxy.mu.Lock()
 		for connection := range proxy.connections {
@@ -96,11 +129,273 @@ func (proxy *networkProxy) Close() error {
 		}
 		proxy.mu.Unlock()
 		<-proxy.done
-		if errors.Is(result, http.ErrServerClosed) {
-			result = nil
+	})
+	return result
+}
+
+func startDNSProxy(policy networkPolicy, lookup dnsLookup) (*dnsProxy, error) {
+	tcp, udp, err := listenDNS(net.ListenUDP)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	proxy := &dnsProxy{
+		tcp: tcp, udp: udp, policy: policy, lookup: lookup, context: ctx, cancel: cancel,
+		tokens: make(chan struct{}, 64), clients: make(map[net.Conn]struct{}),
+	}
+	proxy.serveWG.Add(2)
+	go proxy.serveTCP()
+	go proxy.serveUDP()
+	return proxy, nil
+}
+
+// TCP and UDP have independent port allocators. Reserve both before publishing
+// the shared port, retrying collisions but not permission or resource errors.
+func listenDNS(listenUDP func(string, *net.UDPAddr) (*net.UDPConn, error)) (net.Listener, *net.UDPConn, error) {
+	const attempts = 16
+	for attempt := 1; ; attempt++ {
+		tcp, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			return nil, nil, fmt.Errorf("listen for private DNS over TCP: %w", err)
+		}
+		port := tcp.Addr().(*net.TCPAddr).Port
+		udp, err := listenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port})
+		if err == nil {
+			return tcp, udp, nil
+		}
+		_ = tcp.Close()
+		if !errors.Is(err, syscall.EADDRINUSE) || attempt == attempts {
+			return nil, nil, fmt.Errorf("listen for private DNS over UDP: %w", err)
+		}
+	}
+}
+
+func (proxy *dnsProxy) Close() error {
+	if proxy == nil {
+		return nil
+	}
+	var result error
+	proxy.closeOnce.Do(func() {
+		proxy.cancel()
+		tcpErr := proxy.tcp.Close()
+		udpErr := proxy.udp.Close()
+		proxy.serveWG.Wait()
+		proxy.mu.Lock()
+		for connection := range proxy.clients {
+			_ = connection.Close()
+		}
+		proxy.mu.Unlock()
+		proxy.requestWG.Wait()
+		if tcpErr != nil && !errors.Is(tcpErr, net.ErrClosed) {
+			result = tcpErr
+		} else if udpErr != nil && !errors.Is(udpErr, net.ErrClosed) {
+			result = udpErr
 		}
 	})
 	return result
+}
+
+func (proxy *dnsProxy) serveUDP() {
+	defer proxy.serveWG.Done()
+	buffer := make([]byte, 4096)
+	for {
+		length, peer, err := proxy.udp.ReadFromUDP(buffer)
+		if err != nil {
+			return
+		}
+		request := append([]byte(nil), buffer[:length]...)
+		select {
+		case proxy.tokens <- struct{}{}:
+		default:
+			continue
+		}
+		proxy.requestWG.Add(1)
+		go func() {
+			defer proxy.requestWG.Done()
+			defer func() { <-proxy.tokens }()
+			response := proxy.response(request, 512)
+			if len(response) != 0 {
+				_, _ = proxy.udp.WriteToUDP(response, peer)
+			}
+		}()
+	}
+}
+
+func (proxy *dnsProxy) serveTCP() {
+	defer proxy.serveWG.Done()
+	for {
+		connection, err := proxy.tcp.Accept()
+		if err != nil {
+			return
+		}
+		select {
+		case proxy.tokens <- struct{}{}:
+		default:
+			_ = connection.Close()
+			continue
+		}
+		proxy.mu.Lock()
+		proxy.clients[connection] = struct{}{}
+		proxy.mu.Unlock()
+		proxy.requestWG.Add(1)
+		go func() {
+			defer proxy.requestWG.Done()
+			defer func() { <-proxy.tokens }()
+			defer func() {
+				_ = connection.Close()
+				proxy.mu.Lock()
+				delete(proxy.clients, connection)
+				proxy.mu.Unlock()
+			}()
+			lengthBytes := make([]byte, 2)
+			for {
+				_ = connection.SetDeadline(time.Now().Add(15 * time.Second))
+				if _, err := io.ReadFull(connection, lengthBytes); err != nil {
+					return
+				}
+				request := make([]byte, int(binary.BigEndian.Uint16(lengthBytes)))
+				if len(request) == 0 {
+					return
+				}
+				if _, err := io.ReadFull(connection, request); err != nil {
+					return
+				}
+				response := proxy.response(request, 65535)
+				if len(response) == 0 {
+					return
+				}
+				binary.BigEndian.PutUint16(lengthBytes, uint16(len(response)))
+				if _, err := io.Copy(connection, bytes.NewReader(append(lengthBytes, response...))); err != nil {
+					return
+				}
+			}
+		}()
+	}
+}
+
+type dnsQuestion struct {
+	name  string
+	type_ uint16
+	class uint16
+	end   int
+}
+
+func parseDNSQuestion(message []byte) (dnsQuestion, error) {
+	if len(message) < 12 || binary.BigEndian.Uint16(message[4:6]) != 1 {
+		return dnsQuestion{}, errors.New("DNS request must contain exactly one question")
+	}
+	if binary.BigEndian.Uint16(message[2:4])&0xf800 != 0 {
+		return dnsQuestion{}, errors.New("unsupported DNS request flags")
+	}
+	offset := 12
+	labels := make([]string, 0, 4)
+	for {
+		if offset >= len(message) {
+			return dnsQuestion{}, errors.New("truncated DNS name")
+		}
+		length := int(message[offset])
+		offset++
+		if length == 0 {
+			break
+		}
+		if length > 63 || offset+length > len(message) {
+			return dnsQuestion{}, errors.New("invalid DNS label")
+		}
+		labels = append(labels, strings.ToLower(string(message[offset:offset+length])))
+		offset += length
+	}
+	if offset+4 > len(message) {
+		return dnsQuestion{}, errors.New("truncated DNS question")
+	}
+	name := strings.Join(labels, ".")
+	if err := validateNetworkHostname(name); err != nil {
+		return dnsQuestion{}, err
+	}
+	return dnsQuestion{
+		name: name, type_: binary.BigEndian.Uint16(message[offset : offset+2]),
+		class: binary.BigEndian.Uint16(message[offset+2 : offset+4]), end: offset + 4,
+	}, nil
+}
+
+func dnsErrorResponse(request []byte, code uint16) []byte {
+	response := make([]byte, 12)
+	if len(request) >= 2 {
+		copy(response[:2], request[:2])
+	}
+	flags := uint16(0x8080) | code
+	if len(request) >= 4 {
+		flags |= binary.BigEndian.Uint16(request[2:4]) & 0x0100
+	}
+	binary.BigEndian.PutUint16(response[2:4], flags)
+	return response
+}
+
+func (proxy *dnsProxy) response(request []byte, maximum int) []byte {
+	question, err := parseDNSQuestion(request)
+	if err != nil {
+		return dnsErrorResponse(request, 1)
+	}
+	if !proxy.policy.allowsHostname(question.name) {
+		return dnsQuestionResponse(request, question, 5, nil, maximum)
+	}
+	if question.class != 1 || question.type_ != 1 && question.type_ != 28 {
+		return dnsQuestionResponse(request, question, 4, nil, maximum)
+	}
+	baseContext := proxy.context
+	if baseContext == nil {
+		baseContext = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseContext, 10*time.Second)
+	defer cancel()
+	// Resolve both families so an absent AAAA record cannot negate a valid A
+	// result (or vice versa). Filter to the requested family below.
+	// Wire-format questions are absolute; preserve the root dot so the host's
+	// search domains cannot change the name that passed the allowlist check.
+	addresses, err := proxy.lookup(ctx, "ip", question.name+".")
+	if err != nil {
+		var dnsError *net.DNSError
+		if errors.As(err, &dnsError) && dnsError.IsNotFound {
+			// LookupNetIP does not distinguish NXDOMAIN from NODATA. An existing
+			// name may have neither A nor AAAA, so conservatively return NODATA.
+			return dnsQuestionResponse(request, question, 0, nil, maximum)
+		}
+		return dnsQuestionResponse(request, question, 2, nil, maximum)
+	}
+	filtered := make([]netip.Addr, 0, len(addresses))
+	for _, address := range addresses {
+		address = address.Unmap()
+		if safeProxyDestination(address) && (question.type_ == 1 && address.Is4() || question.type_ == 28 && address.Is6()) {
+			filtered = append(filtered, address)
+		}
+	}
+	return dnsQuestionResponse(request, question, 0, filtered, maximum)
+}
+
+func dnsQuestionResponse(request []byte, question dnsQuestion, code uint16, addresses []netip.Addr, maximum int) []byte {
+	response := make([]byte, 12, maximum)
+	copy(response[:2], request[:2])
+	flags := uint16(0x8080) | code | binary.BigEndian.Uint16(request[2:4])&0x0100
+	binary.BigEndian.PutUint16(response[2:4], flags)
+	binary.BigEndian.PutUint16(response[4:6], 1)
+	response = append(response, request[12:question.end]...)
+	answers := uint16(0)
+	for _, address := range addresses {
+		data := address.AsSlice()
+		answerLength := 12 + len(data)
+		if len(response)+answerLength > maximum {
+			binary.BigEndian.PutUint16(response[2:4], flags|0x0200)
+			break
+		}
+		response = append(response, 0xc0, 0x0c)
+		response = binary.BigEndian.AppendUint16(response, question.type_)
+		response = binary.BigEndian.AppendUint16(response, 1)
+		response = binary.BigEndian.AppendUint32(response, 30)
+		response = binary.BigEndian.AppendUint16(response, uint16(len(data)))
+		response = append(response, data...)
+		answers++
+	}
+	binary.BigEndian.PutUint16(response[6:8], answers)
+	return response
 }
 
 func (handler *networkProxyHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -232,7 +527,7 @@ func restrictedDialContext(ctx context.Context, network, address string) (net.Co
 	if err != nil {
 		return nil, err
 	}
-	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", proxyLookupName(host))
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +548,15 @@ func restrictedDialContext(ctx context.Context, network, address string) (net.Co
 		return nil, errors.Join(failures...)
 	}
 	return nil, fmt.Errorf("destination %s resolves only to protected local addresses", host)
+}
+
+// Proxy authorities must resolve exactly as allowed, without host search-domain
+// expansion. IP literals must remain unchanged for the resolver's literal path.
+func proxyLookupName(host string) string {
+	if _, err := netip.ParseAddr(host); err == nil {
+		return host
+	}
+	return strings.TrimSuffix(host, ".") + "."
 }
 
 func safeProxyDestination(address netip.Addr) bool {

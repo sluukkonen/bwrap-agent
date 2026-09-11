@@ -940,7 +940,9 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		if podmanBin != "" {
 			outer = append(outer, "--netns-only")
 		}
-		outer = append(outer, "--tcp-ports", "none", "--udp-ports", "none", "--tcp-ns", fmt.Sprintf("%d:%s", proxyGuestPort, proxyPortPlaceholder), "--udp-ns", "none")
+		tcpNamespacePorts := fmt.Sprintf("%d:%s,%d:%s", proxyGuestPort, proxyPortPlaceholder, dnsGuestPort, dnsPortPlaceholder)
+		dnsNamespacePort := fmt.Sprintf("%d:%s", dnsGuestPort, dnsPortPlaceholder)
+		outer = append(outer, "--tcp-ports", "none", "--udp-ports", "none", "--tcp-ns", tcpNamespacePorts, "--udp-ns", dnsNamespacePort)
 		for _, port := range ports {
 			option := "--tcp-ports"
 			if port.Protocol == "udp" {

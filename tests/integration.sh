@@ -158,12 +158,15 @@ printf 'equals-launcher-ok\n'
     --instance integration-private \
     --podman off \
     --network private \
+    --network-allow https://example.com \
     --tty never \
     /bin/sh -ec '
         test -r /etc/resolv.conf
-        grep -q "nameserver 169.254.1.1" /etc/resolv.conf
+        grep -q "nameserver 127.0.0.1" /etc/resolv.conf
         getent hosts localhost >/dev/null
         getent hosts "$(hostname)" >/dev/null
+        getent ahosts example.com >/dev/null
+        ! getent ahosts denied.invalid >/dev/null
         test ! -e /etc/shadow
         test ! -e /etc/machine-id
         printf "private-ok\n"

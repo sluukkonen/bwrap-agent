@@ -345,7 +345,7 @@ func Main(args []string) int {
 			return 126
 		}
 		defer proxy.Close()
-		argv, err = plan.runtimeArgv(proxy.port())
+		argv, err = plan.runtimeArgv(proxy.port(), proxy.dnsPort())
 		if err != nil {
 			_ = control.Close()
 			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare private network: %v\n", err)

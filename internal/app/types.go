@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 )
 
 const internalInitMode = "__bwrap_agent_sandbox_init"
@@ -74,7 +75,7 @@ func (p LaunchPlan) Argv() []string {
 	return argv
 }
 
-func (p LaunchPlan) runtimeArgv(proxyHostPort int) ([]string, error) {
+func (p LaunchPlan) runtimeArgv(proxyHostPort, dnsHostPort int) ([]string, error) {
 	argv := p.Argv()
 	if p.ProxyGuestPort == 0 {
 		return argv, nil
@@ -82,17 +83,26 @@ func (p LaunchPlan) runtimeArgv(proxyHostPort int) ([]string, error) {
 	if proxyHostPort < 1 || proxyHostPort > 65535 {
 		return nil, fmt.Errorf("invalid runtime proxy port %d", proxyHostPort)
 	}
-	replaced := false
-	expected := strconv.Itoa(p.ProxyGuestPort) + ":" + proxyPortPlaceholder
-	replacement := strconv.Itoa(p.ProxyGuestPort) + ":" + strconv.Itoa(proxyHostPort)
+	if dnsHostPort < 1 || dnsHostPort > 65535 {
+		return nil, fmt.Errorf("invalid runtime DNS port %d", dnsHostPort)
+	}
+	replacedProxy, replacedDNS := false, false
+	proxyExpected := strconv.Itoa(p.ProxyGuestPort) + ":" + proxyPortPlaceholder
+	proxyReplacement := strconv.Itoa(p.ProxyGuestPort) + ":" + strconv.Itoa(proxyHostPort)
+	dnsExpected := strconv.Itoa(dnsGuestPort) + ":" + dnsPortPlaceholder
+	dnsReplacement := strconv.Itoa(dnsGuestPort) + ":" + strconv.Itoa(dnsHostPort)
 	for index := range p.Outer {
-		if argv[index] == expected {
-			argv[index] = replacement
-			replaced = true
+		if strings.Contains(p.Outer[index], proxyExpected) {
+			argv[index] = strings.ReplaceAll(argv[index], proxyExpected, proxyReplacement)
+			replacedProxy = true
+		}
+		if strings.Contains(p.Outer[index], dnsExpected) {
+			argv[index] = strings.ReplaceAll(argv[index], dnsExpected, dnsReplacement)
+			replacedDNS = true
 		}
 	}
-	if !replaced {
-		return nil, errors.New("private network plan has no proxy port placeholder")
+	if !replacedProxy || !replacedDNS {
+		return nil, errors.New("private network plan is missing a runtime port placeholder")
 	}
 	return argv, nil
 }

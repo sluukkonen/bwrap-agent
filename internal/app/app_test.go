@@ -894,7 +894,10 @@ func TestPrivatePortsBindHostLoopback(t *testing.T) {
 			t.Errorf("missing %q in %#v", expected, plan.Outer)
 		}
 	}
-	for _, expected := range []string{"--splice-only", strconv.Itoa(proxyGuestPort) + ":" + proxyPortPlaceholder} {
+	for _, expected := range []string{
+		"--splice-only", strconv.Itoa(proxyGuestPort) + ":" + proxyPortPlaceholder,
+		strconv.Itoa(dnsGuestPort) + ":" + dnsPortPlaceholder,
+	} {
 		if !strings.Contains(joined, expected) {
 			t.Errorf("missing %q in %#v", expected, plan.Outer)
 		}

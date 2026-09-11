@@ -13,6 +13,8 @@ const (
 	proxyGuestPort         = 65532
 	proxyContainerPort     = proxyGuestPort
 	proxyPortPlaceholder   = "__BWRAP_AGENT_PROXY_HOST_PORT__"
+	dnsGuestPort           = 53
+	dnsPortPlaceholder     = "__BWRAP_AGENT_DNS_HOST_PORT__"
 	proxyContainerHostname = "host.containers.internal"
 	proxyContainerAddress  = "169.254.1.2"
 )
@@ -172,6 +174,16 @@ func (policy networkPolicy) allows(scheme, host string, port uint16) bool {
 		if origin.scheme != scheme || origin.port != port {
 			continue
 		}
+		if origin.allHosts || !origin.wildcard && origin.host == host || origin.wildcard && strings.HasSuffix(host, "."+origin.host) {
+			return true
+		}
+	}
+	return false
+}
+
+func (policy networkPolicy) allowsHostname(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, origin := range policy.origins {
 		if origin.allHosts || !origin.wildcard && origin.host == host || origin.wildcard && strings.HasSuffix(host, "."+origin.host) {
 			return true
 		}
