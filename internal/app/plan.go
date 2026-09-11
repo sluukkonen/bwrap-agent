@@ -691,6 +691,10 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		return LaunchPlan{}, errors.New("--publish requires --network private")
 	}
 	usePTY := opts.TTY == "always" || opts.TTY == "auto" && isTerminal(os.Stdin.Fd()) && isTerminal(os.Stdout.Fd())
+	clipboardMode, clipboardConfig, err := prepareClipboard(opts.Clipboard, usePTY, agentContext)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
 
 	environment := map[string]string{
 		"HOME": filepath.Join(state, "home"), "USER": envValue(os.Environ(), "USER", "agent"),
@@ -976,7 +980,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		launcher = append(launcher, "--seccomp-profile", seccompStatus.Profile)
 	}
 	launcher = append(append(launcher, descriptorSources...), "--")
-	return LaunchPlan{Instance: instance, Project: project, State: state, WorkspaceMode: workspaceMode,
+	return LaunchPlan{Clipboard: clipboardMode, clipboardBridge: clipboardConfig, Instance: instance, Project: project, State: state, WorkspaceMode: workspaceMode,
 		Landlock: landlockStatus, Seccomp: seccompStatus, Bubblewrap: bwrapInfo.BubblewrapStatus,
 		NetworkAllow: append([]string{}, opts.NetworkAllow...), ProxyGuestPort: proxyPort,
 		Command: command, Outer: outer,

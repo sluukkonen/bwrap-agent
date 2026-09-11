@@ -82,6 +82,11 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # Controlling PTY mode: "auto", "always", or "never". Default: "auto".
 # tty = "auto"
 
+# Host clipboard bridge: "off" (default) or "wayland". Requires a PTY,
+# host wl-clipboard, and a Wayland session. Allows sandbox processes to replace
+# the regular clipboard through OSC 52; provides no clipboard-reading operation.
+# clipboard = "off"
+
 # Environment entries merge by variable name. Strings are literal, including
 # empty strings. { inherit = true } copies the host value when it exists.
 # [env]

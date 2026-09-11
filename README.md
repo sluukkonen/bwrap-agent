@@ -203,6 +203,7 @@ Do not bind the host Podman socket into this sandbox. Podman's API is deliberate
 --env NAME[=VALUE]        set a literal value, or inherit NAME from the host
 --unsetenv NAME           remove an environment variable
 --tty auto|always|never   isolated controlling PTY policy (default: auto)
+--clipboard off|wayland  host clipboard write bridge (default: off)
 --podman auto|on|off      detect Podman, require it, or disable it (default: auto)
 --workspace-mode write-through|copy-on-write|read-only
                            persist, discard, or reject workspace writes
@@ -234,6 +235,46 @@ $ ./bin/bwrap-agent run --unsetenv COLORTERM opencode
 Use `./bin/bwrap-agent run --dry-run opencode` to inspect exactly which environment values will be exposed.
 
 Interactive launches use a dedicated PTY automatically. The sandbox receives a real controlling foreground terminal without access to the host terminal device. Non-interactive pipelines keep separate stdout/stderr and bubblewrap's `--new-session` isolation. If detection is wrong, force the behavior with `--tty always` or `--tty never`.
+
+### Clipboard bridge
+
+For terminals such as Ptyxis that do not handle OSC 52 clipboard writes, install
+`wl-clipboard` on the **host** and enable the Wayland bridge:
+
+```console
+$ ./bin/bwrap-agent run --clipboard wayland opencode
+```
+
+To persist the setting, add `clipboard = "wayland"` at the top level of the user
+or trusted project configuration. `--clipboard off` overrides it for a run.
+The default is `off`. The bridge requires a PTY and a host Wayland session;
+missing prerequisites fail launch. `--dry-run --tty always` can inspect the
+configuration without copying anything.
+
+OpenCode's copy-on-selection sends text through the terminal output to a host
+`wl-copy` process. No Wayland socket or desktop environment variables are added
+to the sandbox. Ordinary text pasted through the terminal needs no bridge.
+Successful copies remain available after the sandbox exits through wl-copy's
+background clipboard owner, until replaced or the desktop session ends.
+
+Enabling the bridge allows **any sandbox process to replace your clipboard**;
+the launcher cannot verify that a write came from a user selection. It provides
+no clipboard-reading operation. The host helper and Wayland socket must be
+outside project and sandbox-writable paths. Project configuration remains fully
+trusted, including its ability to enable this feature.
+
+The bridge accepts regular-clipboard UTF-8 text up to 1 MiB, preserving newlines.
+It starts at most five copies per second and coalesces pending writes to the
+latest selection. Helper startup times out after five seconds; failures produce
+a rate-limited launcher warning without terminating the agent. OpenCode may
+still show its own success notification when a clipboard operation fails.
+
+V1 handles seven-bit OSC 52 with BEL or ST termination. It consumes recognized
+clipboard requests, rejecting queries, other selections, invalid data, and
+oversized payloads. It does not bridge images, X11, eight-bit OSC, or multiplexer
+passthrough wrappers. Other terminal sequences keep their existing semantics;
+this is not a general terminal-output security filter. Clipboard access permitted
+by the host terminal itself or explicitly mounted desktop sockets is separate.
 
 ## Development
 

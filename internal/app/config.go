@@ -11,6 +11,7 @@ import (
 )
 
 type fileConfig struct {
+	Clipboard     *string        `toml:"clipboard"`
 	Instance      *string        `toml:"instance"`
 	AgentConfig   *bool          `toml:"agent_config"`
 	Network       *string        `toml:"network"`
@@ -41,6 +42,7 @@ type envDirective struct {
 }
 
 type optionLayer struct {
+	clipboard     *string
 	instance      *string
 	agentConfig   *bool
 	network       *string
@@ -123,6 +125,9 @@ func loadConfigFile(path string) (optionLayer, bool, error) {
 }
 
 func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, error) {
+	if err := validateChoice("clipboard", config.Clipboard, "off", "wayland"); err != nil {
+		return optionLayer{}, err
+	}
 	if config.Instance != nil {
 		if _, err := safeName(*config.Instance); err != nil {
 			return optionLayer{}, fmt.Errorf("instance: %w", err)
@@ -176,6 +181,7 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 		environment[name] = envDirective{kind: envUnset}
 	}
 	return optionLayer{
+		clipboard:     config.Clipboard,
 		instance:      config.Instance,
 		agentConfig:   config.AgentConfig,
 		network:       config.Network,
@@ -314,6 +320,7 @@ func resolveEnvironment(directives map[string]envDirective, hostEnvironment []st
 
 func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources []ConfigSource, hostEnvironment []string) (Options, error) {
 	opts := Options{
+		Clipboard:              "off",
 		Project:                project,
 		Network:                "private",
 		Podman:                 "auto",
@@ -329,6 +336,9 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 	agentConfig := true
 	environment := map[string]envDirective{}
 	apply := func(layer optionLayer) {
+		if layer.clipboard != nil {
+			opts.Clipboard = *layer.clipboard
+		}
 		if layer.instance != nil {
 			opts.Instance = *layer.instance
 		}
@@ -373,6 +383,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		return Options{}, fmt.Errorf("--network-allow: %w", err)
 	}
 	apply(optionLayer{
+		clipboard:     cli.Clipboard,
 		instance:      cli.Instance,
 		agentConfig:   cli.AgentConfig,
 		network:       cli.Network,

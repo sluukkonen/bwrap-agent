@@ -28,26 +28,28 @@ type ConfigSource struct {
 }
 
 type LaunchPlan struct {
-	Instance       string
-	Project        string
-	State          string
-	WorkspaceMode  string
-	Landlock       LandlockStatus
-	Seccomp        SeccompStatus
-	Bubblewrap     BubblewrapStatus
-	NetworkAllow   []string
-	ProxyGuestPort int
-	Command        []string
-	Outer          []string
-	Launcher       []string
-	Bwrap          []string
-	Ports          []PortMapping
-	LaunchEnv      map[string]string
-	TTY            bool
-	ConfigFiles    []ConfigSource
-	ProtectedPaths []string
-	ControlCleanup []controlCleanup
-	Warnings       []string
+	Clipboard       string
+	clipboardBridge *clipboardBridgeConfig
+	Instance        string
+	Project         string
+	State           string
+	WorkspaceMode   string
+	Landlock        LandlockStatus
+	Seccomp         SeccompStatus
+	Bubblewrap      BubblewrapStatus
+	NetworkAllow    []string
+	ProxyGuestPort  int
+	Command         []string
+	Outer           []string
+	Launcher        []string
+	Bwrap           []string
+	Ports           []PortMapping
+	LaunchEnv       map[string]string
+	TTY             bool
+	ConfigFiles     []ConfigSource
+	ProtectedPaths  []string
+	ControlCleanup  []controlCleanup
+	Warnings        []string
 }
 
 type LandlockStatus struct {
@@ -110,6 +112,7 @@ func (p LaunchPlan) runtimeArgv(proxyHostPort, dnsHostPort int) ([]string, error
 func writePlanJSON(w io.Writer, p LaunchPlan) error {
 	configFiles := append([]ConfigSource{}, p.ConfigFiles...)
 	value := struct {
+		Clipboard      string            `json:"clipboard"`
 		Instance       string            `json:"instance"`
 		Project        string            `json:"project"`
 		State          string            `json:"state"`
@@ -128,7 +131,8 @@ func writePlanJSON(w io.Writer, p LaunchPlan) error {
 		Warnings       []string          `json:"warnings,omitempty"`
 		Argv           []string          `json:"argv"`
 	}{
-		Instance: p.Instance, Project: p.Project, State: p.State, WorkspaceMode: p.WorkspaceMode,
+		Clipboard: p.Clipboard,
+		Instance:  p.Instance, Project: p.Project, State: p.State, WorkspaceMode: p.WorkspaceMode,
 		Landlock: p.Landlock, Seccomp: p.Seccomp, Bubblewrap: p.Bubblewrap,
 		NetworkAllow: append([]string{}, p.NetworkAllow...), ProxyGuestPort: p.ProxyGuestPort,
 		Command: p.Command, Ports: p.Ports, Environment: p.LaunchEnv, TTY: p.TTY,

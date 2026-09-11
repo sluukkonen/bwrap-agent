@@ -173,6 +173,10 @@ func runWithPTY(argv []string, environment map[string]string, input, output *os.
 }
 
 func runWithPTYSignals(argv []string, environment map[string]string, input, output *os.File, signals <-chan os.Signal) int {
+	return runWithPTYClipboard(argv, environment, input, output, signals, nil)
+}
+
+func runWithPTYClipboard(argv []string, environment map[string]string, input, output *os.File, signals <-chan os.Signal, clipboard *clipboardBridgeConfig) int {
 	interactive := isTerminal(input.Fd())
 	terminal := input
 	if !interactive {
@@ -241,9 +245,18 @@ func runWithPTYSignals(argv []string, environment map[string]string, input, outp
 			}
 		}
 	}()
-	relayErr := relayPTY(int(input.Fd()), int(output.Fd()), int(master.Fd()), interactive)
+	var parser *clipboardParser
+	var worker *clipboardWorker
+	if clipboard != nil {
+		worker = newClipboardWorker(clipboard.copy, func() { fmt.Fprintln(os.Stderr, "bwrap-agent: warning: clipboard write failed or timed out") })
+		parser = &clipboardParser{copy: worker.submit}
+	}
+	relayErr := relayPTYClipboard(int(input.Fd()), int(output.Fd()), int(master.Fd()), interactive, parser)
 	if relayErr != nil {
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
+	}
+	if worker != nil {
+		worker.close()
 	}
 	waitErr := command.Wait()
 	close(doneSignals)
@@ -496,6 +509,10 @@ func (control *launchControlFiles) Close() error {
 }
 
 func relayPTY(input, output, master int, interactive bool) error {
+	return relayPTYClipboard(input, output, master, interactive, nil)
+}
+
+func relayPTYClipboard(input, output, master int, interactive bool, parser *clipboardParser) error {
 	pollFDs := []unix.PollFd{{Fd: int32(master), Events: unix.POLLIN}, {Fd: int32(input), Events: unix.POLLIN}}
 	buffer := make([]byte, 65536)
 	inputOpen := true
@@ -509,11 +526,18 @@ func relayPTY(input, output, master int, interactive bool) error {
 		if pollFDs[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
 			count, err := unix.Read(master, buffer)
 			if count > 0 {
-				if writeErr := writeAll(output, buffer[:count]); writeErr != nil {
+				data := buffer[:count]
+				if parser != nil {
+					data = parser.feed(data)
+				}
+				if writeErr := writeAll(output, data); writeErr != nil {
 					return writeErr
 				}
 			}
 			if count == 0 || errors.Is(err, unix.EIO) {
+				if parser != nil {
+					return writeAll(output, parser.finish())
+				}
 				return nil
 			}
 			if err != nil && !errors.Is(err, unix.EINTR) {

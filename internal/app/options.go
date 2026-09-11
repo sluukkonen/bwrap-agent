@@ -26,6 +26,7 @@ func (s *stringList) Decode(ctx *kong.DecodeContext) error {
 
 // Options is the fully merged set of values used to construct a sandbox.
 type Options struct {
+	Clipboard              string
 	Project                string
 	Instance               string
 	NoAgentConfig          bool
@@ -50,6 +51,7 @@ type Options struct {
 // cliOptions contains the run command's options. Pointers let an omitted
 // configurable scalar be distinguished from an explicit command-line override.
 type cliOptions struct {
+	Clipboard              *string    `name:"clipboard" enum:"off,wayland" placeholder:"off|wayland" help:"Host clipboard bridge: wayland accepts terminal clipboard writes via host wl-copy. Requires a PTY. Default: off."`
 	Project                *string    `name:"project" type:"path" placeholder:"PATH" help:"Expose PATH as the project directory; write behavior follows --workspace-mode (default: current directory)."`
 	Instance               *string    `name:"instance" placeholder:"NAME" help:"Use this managed instance name, overriding project configuration (default: project directory name)."`
 	AgentConfig            *bool      `name:"agent-config" negatable:"" help:"Expose detected host agent configuration read-only and seed mutable credentials. Default: enabled."`
@@ -374,7 +376,7 @@ func Main(args []string) int {
 	status := 0
 	if plan.TTY {
 		signal.Notify(launchSignals, syscall.SIGWINCH)
-		status = runWithPTYSignals(argv, plan.LaunchEnv, os.Stdin, os.Stdout, launchSignals)
+		status = runWithPTYClipboard(argv, plan.LaunchEnv, os.Stdin, os.Stdout, launchSignals, plan.clipboardBridge)
 	} else {
 		status = runDirectSignals(argv, plan.LaunchEnv, os.Stdin, os.Stdout, os.Stderr, launchSignals)
 	}
