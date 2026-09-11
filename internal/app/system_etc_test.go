@@ -240,7 +240,7 @@ func TestGeneratedEtcIsMinimalAndNetworkSpecific(t *testing.T) {
 	if got := byDestination["/etc/nsswitch.conf"]; !strings.Contains(got, "hosts: files dns") || strings.Contains(got, "systemd") || strings.Contains(got, "sss") {
 		t.Fatalf("generated NSS policy = %q", got)
 	}
-	if got := byDestination["/etc/resolv.conf"]; !strings.Contains(got, "nameserver 127.0.0.1") || !strings.Contains(got, "allowed names resolve through the private DNS proxy") {
+	if got := byDestination["/etc/resolv.conf"]; !strings.Contains(got, "nameserver 127.0.0.1") || !strings.Contains(got, "DNS A/AAAA lookups use the private DNS proxy independently of the HTTP allowlist") {
 		t.Fatalf("private resolver = %q", got)
 	}
 	if got := byDestination["/etc/hosts"]; !strings.Contains(got, "127.0.0.1 agent-private-test") || !strings.Contains(got, "::1 agent-private-test") {

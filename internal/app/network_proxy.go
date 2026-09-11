@@ -44,7 +44,6 @@ type dnsLookup func(context.Context, string, string) ([]netip.Addr, error)
 type dnsProxy struct {
 	tcp       net.Listener
 	udp       *net.UDPConn
-	policy    networkPolicy
 	lookup    dnsLookup
 	context   context.Context
 	cancel    context.CancelFunc
@@ -65,7 +64,7 @@ func startNetworkProxyWithDial(policy networkPolicy, dial proxyDialer) (*network
 	if err != nil {
 		return nil, err
 	}
-	dns, err := startDNSProxy(policy, net.DefaultResolver.LookupNetIP)
+	dns, err := startDNSProxy(net.DefaultResolver.LookupNetIP)
 	if err != nil {
 		_ = listener.Close()
 		return nil, err
@@ -133,14 +132,14 @@ func (proxy *networkProxy) Close() error {
 	return result
 }
 
-func startDNSProxy(policy networkPolicy, lookup dnsLookup) (*dnsProxy, error) {
+func startDNSProxy(lookup dnsLookup) (*dnsProxy, error) {
 	tcp, udp, err := listenDNS(net.ListenUDP)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	proxy := &dnsProxy{
-		tcp: tcp, udp: udp, policy: policy, lookup: lookup, context: ctx, cancel: cancel,
+		tcp: tcp, udp: udp, lookup: lookup, context: ctx, cancel: cancel,
 		tokens: make(chan struct{}, 64), clients: make(map[net.Conn]struct{}),
 	}
 	proxy.serveWG.Add(2)
@@ -335,9 +334,6 @@ func (proxy *dnsProxy) response(request []byte, maximum int) []byte {
 	if err != nil {
 		return dnsErrorResponse(request, 1)
 	}
-	if !proxy.policy.allowsHostname(question.name) {
-		return dnsQuestionResponse(request, question, 5, nil, maximum)
-	}
 	if question.class != 1 || question.type_ != 1 && question.type_ != 28 {
 		return dnsQuestionResponse(request, question, 4, nil, maximum)
 	}
@@ -350,7 +346,7 @@ func (proxy *dnsProxy) response(request []byte, maximum int) []byte {
 	// Resolve both families so an absent AAAA record cannot negate a valid A
 	// result (or vice versa). Filter to the requested family below.
 	// Wire-format questions are absolute; preserve the root dot so the host's
-	// search domains cannot change the name that passed the allowlist check.
+	// search domains cannot change the requested name.
 	addresses, err := proxy.lookup(ctx, "ip", question.name+".")
 	if err != nil {
 		var dnsError *net.DNSError

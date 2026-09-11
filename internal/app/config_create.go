@@ -36,7 +36,8 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # network = "private"
 
 # HTTP/HTTPS origins reachable in private mode. An empty combined list denies
-# all outside access. Exact hosts, leading *. wildcards, and a full * wildcard
+# outbound HTTP/HTTPS access; DNS A/AAAA lookups remain available for any name.
+# Exact hosts, leading *. wildcards, and a full * wildcard
 # are accepted. A missing port means 80 for HTTP or 443 for HTTPS. Arrays from
 # configuration layers and the CLI are combined and deduplicated.
 # network_allow = ["https://registry.example.com", "https://*.example.com"]

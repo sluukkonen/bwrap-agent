@@ -156,9 +156,9 @@ printf 'equals-launcher-ok\n'
 "$binary" \
     run \
     --instance integration-private \
+    --no-config \
     --podman off \
     --network private \
-    --network-allow https://example.com \
     --tty never \
     /bin/sh -ec '
         test -r /etc/resolv.conf
@@ -166,7 +166,8 @@ printf 'equals-launcher-ok\n'
         getent hosts localhost >/dev/null
         getent hosts "$(hostname)" >/dev/null
         getent ahosts example.com >/dev/null
-        ! getent ahosts denied.invalid >/dev/null
+        status=$(curl --silent --show-error --max-time 5 --output /dev/null --write-out "%{http_code}" http://example.com)
+        test "$status" = 403
         test ! -e /etc/shadow
         test ! -e /etc/machine-id
         printf "private-ok\n"

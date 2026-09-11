@@ -181,16 +181,6 @@ func (policy networkPolicy) allows(scheme, host string, port uint16) bool {
 	return false
 }
 
-func (policy networkPolicy) allowsHostname(host string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	for _, origin := range policy.origins {
-		if origin.allHosts || !origin.wildcard && origin.host == host || origin.wildcard && strings.HasSuffix(host, "."+origin.host) {
-			return true
-		}
-	}
-	return false
-}
-
 func originTarget(scheme, hostport string) (string, uint16, error) {
 	defaultPort := "443"
 	if scheme == "http" {

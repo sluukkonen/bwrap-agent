@@ -65,20 +65,6 @@ func TestNetworkOriginNormalizationAndMatching(t *testing.T) {
 			t.Errorf("expected policy to deny %#v", denied)
 		}
 	}
-	for _, host := range []string{"example.com", "sub.example.com", "deep.sub.example.com", "anything.invalid"} {
-		if !policy.allowsHostname(host) {
-			t.Errorf("expected policy to allow DNS for %q", host)
-		}
-	}
-	restricted, err := parseNetworkPolicy([]string{"https://example.com", "https://*.example.com:8443"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, host := range []string{"other.example.net", "notexample.com"} {
-		if restricted.allowsHostname(host) {
-			t.Errorf("expected restricted policy to deny DNS for %q", host)
-		}
-	}
 }
 
 func TestNetworkOriginValidation(t *testing.T) {
@@ -93,12 +79,12 @@ func TestNetworkOriginValidation(t *testing.T) {
 	}
 }
 
-func TestEmptyNetworkPolicyDeniesEverything(t *testing.T) {
+func TestEmptyNetworkPolicyDeniesHTTPOrigins(t *testing.T) {
 	policy, err := parseNetworkPolicy(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.allows("https", "example.com", 443) || policy.allowsHostname("example.com") {
+	if policy.allows("https", "example.com", 443) || policy.allows("http", "example.com", 80) {
 		t.Fatal("empty policy allowed a destination")
 	}
 }

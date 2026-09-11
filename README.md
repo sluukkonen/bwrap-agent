@@ -133,7 +133,7 @@ Landlock filesystem enforcement defaults to `auto`. It is applied when Podman is
 
 The default `private` mode gives every invocation its own network namespace. Agents can independently bind `localhost:3000` or publish a Podman container on `localhost:5432` without colliding with another sandbox. Those ports are initially reachable only from that sandbox.
 
-Private mode has no direct outbound interface. Standard `HTTP_PROXY`, `HTTPS_PROXY`, and lowercase equivalents point to a launcher-owned enforcing proxy, and the combined allowlist is empty by default, so outside access is denied. Allow exact or wildcard HTTP/HTTPS origins with configuration or a repeatable option:
+Private mode has no direct outbound interface. Standard `HTTP_PROXY`, `HTTPS_PROXY`, and lowercase equivalents point to a launcher-owned enforcing proxy, and the combined allowlist is empty by default, so outbound HTTP/HTTPS access is denied. DNS lookups are available independently of that list. Allow exact or wildcard HTTP/HTTPS origins with configuration or a repeatable option:
 
 ```console
 $ ./bin/bwrap-agent run \
@@ -146,7 +146,7 @@ An omitted port means 80 for HTTP or 443 for HTTPS; specify another port explici
 
 The proxy accepts ordinary HTTP and HTTPS `CONNECT`. HTTPS remains end-to-end encrypted, but the initial TLS server name must match the CONNECT destination; encrypted ClientHello is rejected because its destination cannot be verified. Software must honor the standard proxy variables in this first version. Direct sockets and non-HTTP protocols have no outside route. Podman passes the proxy variables into containers by default, so image pulls, package managers, and Testcontainers use the same policy.
 
-Ordinary DNS lookup remains available for allowlisted hostnames. A launcher-owned resolver answers A and AAAA queries only when the name matches at least one configured origin, and removes loopback, link-local, unspecified, and multicast answers. DNS for other names is refused, and resolved addresses still have no direct route from the sandbox.
+Ordinary DNS A/AAAA lookups are available for any valid hostname, even with an empty HTTP/HTTPS allowlist. The launcher-owned resolver removes loopback, link-local, unspecified, and multicast answers. Other DNS record types are unsupported, and resolved addresses still have no direct route from the sandbox. DNS queries can carry data out of the sandbox through their names; use `--network none` when no external communication is acceptable.
 
 Regular rootless Podman networks receive a working `host.containers.internal` proxy endpoint automatically. A container started with Podman's `--network host` shares the sandbox network namespace instead; override its proxy URL to `http://127.0.0.1:65532` if that uncommon mode is needed. This still reaches the same allowlist-enforcing proxy.
 

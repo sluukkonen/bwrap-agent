@@ -21,6 +21,22 @@ import (
 	"time"
 )
 
+func TestHTTPProxyEmptyAllowlistDeniesHTTPAndCONNECT(t *testing.T) {
+	handler := &networkProxyHandler{policy: networkPolicy{}}
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "http://unlisted.example/artifact", nil),
+		httptest.NewRequest(http.MethodConnect, "unlisted.example:443", nil),
+	} {
+		t.Run(request.Method, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("empty allowlist returned status %d, want 403", response.Code)
+			}
+		})
+	}
+}
+
 func TestHTTPProxyEnforcesAllowlistAndOutboundHost(t *testing.T) {
 	var receivedHost string
 	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -189,16 +205,12 @@ func dnsQuery(name string, recordType uint16) []byte {
 }
 
 func TestPrivateDNSProxyFiltersQueriesAndAnswers(t *testing.T) {
-	policy, err := parseNetworkPolicy([]string{"https://allowed.example", "http://*.wild.example"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var lookedUp []string
 	lookup := func(_ context.Context, network, host string) ([]netip.Addr, error) {
 		lookedUp = append(lookedUp, network+" "+host)
 		return []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("203.0.113.8")}, nil
 	}
-	proxy := &dnsProxy{policy: policy, lookup: lookup}
+	proxy := &dnsProxy{lookup: lookup}
 
 	response := proxy.response(dnsQuery("Allowed.Example", 1), 512)
 	if id := binary.BigEndian.Uint16(response[:2]); id != 0x1234 {
@@ -217,26 +229,22 @@ func TestPrivateDNSProxyFiltersQueriesAndAnswers(t *testing.T) {
 		t.Fatalf("DNS lookups = %#v", lookedUp)
 	}
 
-	denied := proxy.response(dnsQuery("denied.example", 1), 512)
-	if code := binary.BigEndian.Uint16(denied[2:4]) & 0x000f; code != 5 || len(lookedUp) != 1 {
-		t.Fatalf("denied DNS response code = %d, lookups = %#v", code, lookedUp)
+	unlisted := proxy.response(dnsQuery("unlisted.example", 1), 512)
+	if code := binary.BigEndian.Uint16(unlisted[2:4]) & 0x000f; code != 0 || len(lookedUp) != 2 || lookedUp[1] != "ip unlisted.example." {
+		t.Fatalf("unlisted DNS response code = %d, lookups = %#v", code, lookedUp)
 	}
 	unsupported := proxy.response(dnsQuery("child.wild.example", 16), 512)
-	if code := binary.BigEndian.Uint16(unsupported[2:4]) & 0x000f; code != 4 || len(lookedUp) != 1 {
+	if code := binary.BigEndian.Uint16(unsupported[2:4]) & 0x000f; code != 4 || len(lookedUp) != 2 {
 		t.Fatalf("unsupported DNS response code = %d, lookups = %#v", code, lookedUp)
 	}
 }
 
 func TestPrivateDNSProxyPreservesAbsoluteQuestion(t *testing.T) {
-	policy, err := parseNetworkPolicy([]string{"https://*"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, name := range []string{"Example.COM", "registry", "203.0.113.8"} {
 		for _, kind := range []uint16{1, 28} {
 			t.Run(fmt.Sprintf("%s/%d", name, kind), func(t *testing.T) {
 				var lookedUp string
-				proxy := &dnsProxy{policy: policy, lookup: func(_ context.Context, _, host string) ([]netip.Addr, error) {
+				proxy := &dnsProxy{lookup: func(_ context.Context, _, host string) ([]netip.Addr, error) {
 					lookedUp = host
 					return nil, nil
 				}}
@@ -268,14 +276,10 @@ func TestProxyLookupName(t *testing.T) {
 }
 
 func TestPrivateDNSProxyServesUDPAndTCP(t *testing.T) {
-	policy, err := parseNetworkPolicy([]string{"https://allowed.example"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	lookup := func(_ context.Context, network, host string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("2001:db8::8")}, nil
 	}
-	proxy, err := startDNSProxy(policy, lookup)
+	proxy, err := startDNSProxy(lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,10 +323,6 @@ func TestPrivateDNSProxyServesUDPAndTCP(t *testing.T) {
 }
 
 func TestPrivateDNSProxyMissingAddressFamily(t *testing.T) {
-	policy, err := parseNetworkPolicy([]string{"https://allowed.example"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, family := range []struct {
 		name            string
 		address         string
@@ -332,7 +332,7 @@ func TestPrivateDNSProxyMissingAddressFamily(t *testing.T) {
 		{"IPv6 only", "2001:db8::8", 28, 1},
 	} {
 		t.Run(family.name, func(t *testing.T) {
-			proxy := &dnsProxy{policy: policy, lookup: func(_ context.Context, network, host string) ([]netip.Addr, error) {
+			proxy := &dnsProxy{lookup: func(_ context.Context, network, host string) ([]netip.Addr, error) {
 				if network != "ip" {
 					return nil, &net.DNSError{IsNotFound: true}
 				}
@@ -359,7 +359,7 @@ func TestPrivateDNSProxyMissingAddressFamily(t *testing.T) {
 		{"canceled", context.Canceled, 2},
 	} {
 		t.Run(failure.name, func(t *testing.T) {
-			proxy := &dnsProxy{policy: policy, lookup: func(context.Context, string, string) ([]netip.Addr, error) { return nil, failure.err }}
+			proxy := &dnsProxy{lookup: func(context.Context, string, string) ([]netip.Addr, error) { return nil, failure.err }}
 			response := proxy.response(dnsQuery("allowed.example", 1), 512)
 			if code := binary.BigEndian.Uint16(response[2:4]) & 15; code != failure.code || binary.BigEndian.Uint16(response[6:8]) != 0 {
 				t.Fatalf("rcode = %d, want %d and zero answers", code, failure.code)
@@ -431,11 +431,7 @@ func TestDNSListenerStopsOnPermanentErrorOrRetryLimit(t *testing.T) {
 }
 
 func TestPrivateDNSProxyReusesTCPConnection(t *testing.T) {
-	policy, err := parseNetworkPolicy([]string{"https://allowed.example"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	proxy, err := startDNSProxy(policy, func(context.Context, string, string) ([]netip.Addr, error) {
+	proxy, err := startDNSProxy(func(context.Context, string, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("203.0.113.8"), netip.MustParseAddr("2001:db8::8")}, nil
 	})
 	if err != nil {
@@ -488,7 +484,7 @@ func TestPrivateDNSProxyReusesTCPConnection(t *testing.T) {
 }
 
 func TestPrivateDNSProxyCloseClosesIdleTCPClients(t *testing.T) {
-	proxy, err := startDNSProxy(networkPolicy{}, func(context.Context, string, string) ([]netip.Addr, error) {
+	proxy, err := startDNSProxy(func(context.Context, string, string) ([]netip.Addr, error) {
 		return nil, nil
 	})
 	if err != nil {
