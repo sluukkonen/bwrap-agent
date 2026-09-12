@@ -588,8 +588,12 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	var storageConfig, containersConfig string
+	var storageConfig, containersConfig, hostAccount string
 	if podmanBin != "" {
+		hostAccount, err = hostAccountName(os.Environ())
+		if err != nil {
+			return LaunchPlan{}, err
+		}
 		storageConfig, err = writeStorageConfig(state)
 		if err != nil {
 			return LaunchPlan{}, err
@@ -670,13 +674,14 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		return LaunchPlan{}, err
 	}
 
+	accountName, _ := currentAccount()
 	environment := map[string]string{
-		"HOME": filepath.Join(state, "home"), "USER": envValue(os.Environ(), "USER", "agent"),
-		"LOGNAME":         envValue(os.Environ(), "LOGNAME", envValue(os.Environ(), "USER", "agent")),
+		"HOME": filepath.Join(state, "home"), "USER": envValue(os.Environ(), "USER", accountName),
+		"LOGNAME":         envValue(os.Environ(), "LOGNAME", envValue(os.Environ(), "USER", accountName)),
 		"PATH":            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"XDG_CONFIG_HOME": filepath.Join(state, "config"), "XDG_CACHE_HOME": filepath.Join(state, "home", ".cache"),
 		"XDG_DATA_HOME": filepath.Join(state, "data"), "XDG_STATE_HOME": filepath.Join(state, "home", ".local", "state"),
-		"XDG_RUNTIME_DIR": "/run/bwrap-agent/runtime", "TMPDIR": filepath.Join(state, "tmp"),
+		"XDG_RUNTIME_DIR": sandboxRuntimeDirectory, "TMPDIR": filepath.Join(state, "tmp"),
 		"BWRAP_AGENT_INSTANCE": instance,
 	}
 	if opts.Network == "private" {
@@ -907,6 +912,13 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	for _, name := range names {
 		bwrap = append(bwrap, "--setenv", name, environment[name])
 	}
+	// Removing a value from the sandbox map is not enough: outer processes
+	// can require or introduce it again before Bubblewrap starts.
+	for _, name := range opts.UnsetEnv {
+		if _, required := environment[name]; !required {
+			bwrap = append(bwrap, "--unsetenv", name)
+		}
+	}
 	if podmanBin != "" {
 		// The supervisor uses only our generated configuration. Its CONTAINERS_CONF
 		// must not suppress user configuration in the sandbox.
@@ -944,6 +956,11 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		outer = append(outer, "--")
 	}
 	launchEnv := cloneMap(environment)
+	// Podman uses USER to look up subordinate IDs before entering its user
+	// namespace. Sandbox overrides must not change the invoking account.
+	if podmanBin != "" {
+		launchEnv["USER"], launchEnv["LOGNAME"] = hostAccount, hostAccount
+	}
 	// The outer podman-unshare process needs a host-visible runtime directory;
 	// bubblewrap sets the shorter private value encoded in its own argv.
 	launchEnv["XDG_RUNTIME_DIR"] = filepath.Join(state, "run")

@@ -449,11 +449,13 @@ test -e "$BWRAP_AGENT_STATE_HOME/instances/integration-read-only/state/home/stat
 "$binary" \
     run \
     --instance integration-podman \
+    --unsetenv USER \
+    --unsetenv LOGNAME \
 	--unsetenv BWRAP_AGENT_PODMAN \
 	--env BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES=invalid \
     --network host \
     --tty never \
-	/bin/sh -ec 'grep -Eq "^Seccomp:[[:space:]]+2$" /proc/self/status; test "$BWRAP_AGENT_PODMAN" = 1; test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"; test -n "$DOCKER_HOST"; test -z "${CONTAINER_HOST:-}"; test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; test "$(getent passwd 0 | cut -d: -f6)" = "$HOME"; test ! -e /etc/subuid; test ! -e /etc/subgid; test ! -e /etc/containers/containers.conf; ! pgrep -x podman >/dev/null; podman info >/dev/null; ! pgrep -x podman >/dev/null; printf "podman-ok\n"'
+	/bin/sh -ec 'grep -Eq "^Seccomp:[[:space:]]+2$" /proc/self/status; test "$BWRAP_AGENT_PODMAN" = 1; test ! -e /dev/fuse; test "${USER+x}" != x; test "${LOGNAME+x}" != x; test -z "${BWRAP_AGENT_INTERNAL_LANDLOCK_WRITES:-}"; test -n "$DOCKER_HOST"; test -z "${CONTAINER_HOST:-}"; test -S "$XDG_RUNTIME_DIR/podman/podman.sock"; test "$(getent passwd 0 | cut -d: -f6)" = "$HOME"; test ! -e /etc/subuid; test ! -e /etc/subgid; test ! -e /etc/containers/containers.conf; ! pgrep -x podman >/dev/null; podman info >/dev/null; ! pgrep -x podman >/dev/null; printf "podman-ok\n"'
 test ! -e "$BWRAP_AGENT_STATE_HOME/instances/integration-podman/state/run/libpod/tmp/pause.pid"
 
 "$binary" \
@@ -462,6 +464,35 @@ test ! -e "$BWRAP_AGENT_STATE_HOME/instances/integration-podman/state/run/libpod
     --network host \
     --tty never \
     /bin/sh -ec 'socket=${DOCKER_HOST#unix://}; test -S "$socket"; ! pgrep -x podman >/dev/null; result=$(curl --silent --show-error --unix-socket "$socket" http://d/_ping); test "$result" = OK; version=$(curl --silent --show-error --unix-socket "$socket" http://d/version); printf %s "$version" | grep -q '"ApiVersion"'; pgrep -x podman >/dev/null; printf "docker-api-ok\n"'
+
+# The target's runtime environment must not determine the internal API endpoint.
+for runtime_case in default unset empty relative absolute; do
+    set --
+    case "$runtime_case" in
+        default) expected_runtime=/run/bwrap-agent/runtime ;;
+        unset) expected_runtime=; set -- --unsetenv XDG_RUNTIME_DIR ;;
+        empty) expected_runtime=; set -- --env XDG_RUNTIME_DIR= ;;
+        relative) expected_runtime=relative/runtime; set -- --env "XDG_RUNTIME_DIR=$expected_runtime" ;;
+        absolute) expected_runtime=/tmp/custom-runtime; set -- --env "XDG_RUNTIME_DIR=$expected_runtime" ;;
+    esac
+    "$binary" run --instance "integration-runtime-$runtime_case" --network host --tty never \
+        "$@" --env "RUNTIME_CASE=$runtime_case" --env "EXPECTED_RUNTIME=$expected_runtime" \
+        /bin/sh -ec '
+            if [ "$RUNTIME_CASE" = unset ]; then
+                test "${XDG_RUNTIME_DIR+x}" != x
+            else
+                test "${XDG_RUNTIME_DIR+x}" = x
+                test "$XDG_RUNTIME_DIR" = "$EXPECTED_RUNTIME"
+            fi
+            socket=/run/bwrap-agent/runtime/podman/podman.sock
+            test "$DOCKER_HOST" = "unix://$socket"
+            test "$TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE" = "$socket"
+            test -S "$socket"
+            result=$(curl --fail --silent --show-error --unix-socket "$socket" http://d/_ping)
+            test "$result" = OK
+            printf "runtime-%s-ok\n" "$RUNTIME_CASE"
+        '
+done
 
 if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     "$binary" \
@@ -491,6 +522,21 @@ if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
             printf "container-copy-on-write-ok\n"
         '
     test ! -e "$readonly_project/container-write-probe"
+
+    "$binary" run --project "$readonly_project" --instance integration-containers \
+        --network host --tty never --unsetenv XDG_RUNTIME_DIR \
+        --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" /bin/sh -ec '
+            test "${XDG_RUNTIME_DIR+x}" != x
+            podman --remote --url "$DOCKER_HOST" run --pull=never -d --name runtime-cleanup "$BWRAP_AGENT_TEST_IMAGE" sleep 300
+            test "$(podman --remote --url "$DOCKER_HOST" inspect --format "{{.State.Running}}" runtime-cleanup)" = true
+        '
+    "$binary" run --project "$readonly_project" --instance integration-containers \
+        --network host --tty never /bin/sh -ec '
+            test "$(podman inspect --format "{{.State.Running}}" runtime-cleanup)" = false
+            podman rm runtime-cleanup
+            printf "runtime-unset-container-cleanup-ok\n"
+        '
+
 
     protected_config_before=$(cat "$protected_project/.git/config")
     "$binary" \

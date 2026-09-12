@@ -600,7 +600,7 @@ func sandboxRuntime(argv []string, podmanEnabled bool) int {
 	var service *managedProcess
 	if podmanEnabled {
 		var err error
-		socket, err = newPodmanSocket(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "podman", "podman.sock"))
+		socket, err = newPodmanSocket(filepath.Join(sandboxRuntimeDirectory, "podman", "podman.sock"))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bwrap-agent: Podman API socket failed to initialize: %v\n", err)
 			return 70
@@ -806,6 +806,13 @@ func startPodmanService(listener *os.File) (*managedProcess, error) {
 	return service, nil
 }
 
+// Internal Podman processes use the private runtime directory even when the
+// target command overrides or unsets XDG_RUNTIME_DIR.
+func sandboxPodmanEnvironment(environment []string) []string {
+	environment = withoutEnvironment(environment, "CONTAINER_HOST", "CONTAINER_CONNECTION", "XDG_RUNTIME_DIR")
+	return append(environment, "XDG_RUNTIME_DIR="+sandboxRuntimeDirectory)
+}
+
 func podmanServiceExec() int {
 	podman, err := exec.LookPath("podman")
 	if err != nil {
@@ -815,7 +822,7 @@ func podmanServiceExec() int {
 	_ = os.Setenv("LISTEN_PID", fmt.Sprintf("%d", os.Getpid()))
 	_ = os.Setenv("LISTEN_FDS", "1")
 	_ = os.Setenv("LISTEN_FDNAMES", "podman.socket")
-	environment := withoutEnvironment(os.Environ(), "CONTAINER_HOST", "CONTAINER_CONNECTION")
+	environment := sandboxPodmanEnvironment(os.Environ())
 	if err := unix.Exec(podman, []string{"podman", "system", "service", "--time=0"}, environment); err != nil {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: Podman API service failed to exec: %v\n", err)
 		return 70
@@ -832,7 +839,7 @@ func cleanupPodman(enabled bool, service *managedProcess) {
 	if enabled {
 		stop := exec.Command("podman", "stop", "--all", "--ignore", "--time", "3")
 		stop.Stdout, stop.Stderr = io.Discard, io.Discard
-		stop.Env = withoutEnvironment(os.Environ(), "CONTAINER_HOST", "CONTAINER_CONNECTION")
+		stop.Env = sandboxPodmanEnvironment(os.Environ())
 		_ = stop.Run()
 	}
 	stopService(service)

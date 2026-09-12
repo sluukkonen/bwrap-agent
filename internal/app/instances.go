@@ -730,11 +730,11 @@ func tombstoneNeedsPodmanCleanup(tombstone string) (bool, error) {
 	return false, nil
 }
 
-func podmanCleanupEnvironment(environment []string, runtime, storageConfig, containersConfig string) []string {
+func podmanCleanupEnvironment(environment []string, accountName, runtime, storageConfig, containersConfig string) []string {
 	environment = withoutEnvironment(environment, "CONTAINER_HOST", "CONTAINER_CONNECTION", "DOCKER_HOST",
 		"CONTAINERS_STORAGE_CONF", "CONTAINERS_CONF", "CONTAINERS_CONF_OVERRIDE", "_CONTAINERS_USERNS_CONFIGURED",
-		"STORAGE_DRIVER", "STORAGE_OPTS", "XDG_RUNTIME_DIR", "PODMAN_NO_PAUSE_PROCESS")
-	return append(environment, "XDG_RUNTIME_DIR="+runtime, "CONTAINERS_STORAGE_CONF="+storageConfig,
+		"STORAGE_DRIVER", "STORAGE_OPTS", "XDG_RUNTIME_DIR", "PODMAN_NO_PAUSE_PROCESS", "USER", "LOGNAME")
+	return append(environment, "USER="+accountName, "LOGNAME="+accountName, "XDG_RUNTIME_DIR="+runtime, "CONTAINERS_STORAGE_CONF="+storageConfig,
 		"CONTAINERS_CONF="+containersConfig, "PODMAN_NO_PAUSE_PROCESS=1")
 }
 
@@ -921,6 +921,11 @@ func withPodmanCleanupState(tombstone string, action func(runtime, storageConfig
 }
 
 func podmanUnshareRemove(path string) error {
+	environment := os.Environ()
+	accountName, err := hostAccountName(environment)
+	if err != nil {
+		return fmt.Errorf("resolve Podman cleanup identity: %w", err)
+	}
 	podman, err := exec.LookPath("podman")
 	if err != nil {
 		return fmt.Errorf("Podman is required to remove rootless container storage: %w", err)
@@ -932,7 +937,7 @@ func podmanUnshareRemove(path string) error {
 	return withPodmanCleanupState(path, func(runtime, storageConfig, containersConfig string, targets []string) error {
 		arguments := append([]string{"unshare", remove, "-rf", "--"}, targets...)
 		command := exec.Command(podman, arguments...)
-		command.Env = podmanCleanupEnvironment(os.Environ(), runtime, storageConfig, containersConfig)
+		command.Env = podmanCleanupEnvironment(environment, accountName, runtime, storageConfig, containersConfig)
 		output, err := command.CombinedOutput()
 		if err != nil {
 			message := strings.TrimSpace(string(output))

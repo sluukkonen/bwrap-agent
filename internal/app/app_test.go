@@ -963,3 +963,94 @@ func TestNetworkAllowModeCompatibility(t *testing.T) {
 		t.Fatalf("none mode activated proxy support: %#v", plan)
 	}
 }
+
+func TestPodmanSupervisorUsesHostAccount(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	t.Setenv("USER", "")
+	t.Setenv("LOGNAME", "")
+	if err := os.Unsetenv("USER"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Unsetenv("LOGNAME"); err != nil {
+		t.Fatal(err)
+	}
+	account, _ := currentAccount()
+	for _, override := range []bool{false, true} {
+		opts := Options{Project: ".", Instance: fmt.Sprintf("account-%t", override), Network: "host", Podman: "on", TTY: "never", Command: []string{"/bin/true"}}
+		wantSandbox := account
+		if override {
+			opts.Env = []string{"USER=custom", "LOGNAME=custom"}
+			wantSandbox = "custom"
+		}
+		plan, err := BuildPlan(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"USER", "LOGNAME"} {
+			if plan.LaunchEnv[key] != account {
+				t.Errorf("supervisor %s = %q, want %q", key, plan.LaunchEnv[key], account)
+			}
+			if !strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--setenv\x00"+key+"\x00"+wantSandbox+"\x00") {
+				t.Errorf("sandbox %s does not match %q", key, wantSandbox)
+			}
+		}
+	}
+}
+
+func TestSandboxDoesNotExposeFuseDevice(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	for _, mode := range []string{"on", "off"} {
+		plan, err := BuildPlan(Options{Project: ".", Instance: "fuse-" + mode, Network: "host", Podman: mode, TTY: "never", Command: []string{"/bin/true"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(strings.Join(plan.Bwrap, "\x00"), "/dev/fuse") {
+			t.Errorf("Podman %s: sandbox exposes the FUSE device", mode)
+		}
+	}
+}
+
+func TestSandboxUnsetsOuterEnvironment(t *testing.T) {
+	for _, podman := range []string{"on", "off"} {
+		for _, network := range []string{"host", "private", "none"} {
+			t.Run(podman+"-"+network, func(t *testing.T) {
+				t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+				removed := []string{"USER", "LOGNAME", "XDG_RUNTIME_DIR"}
+				opts := Options{Project: ".", Instance: "unset-outer", Network: network, Podman: podman, TTY: "never", Command: []string{"/bin/true"},
+					Env:      []string{"USER=custom", "LOGNAME=custom"},
+					UnsetEnv: append(append([]string{}, removed...), "BWRAP_AGENT_PODMAN", "CONTAINERS_STORAGE_CONF"),
+				}
+				plan, err := BuildPlan(opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				joined := strings.Join(plan.Bwrap, "\x00")
+				for _, key := range removed {
+					if !strings.Contains(joined, "--unsetenv\x00"+key+"\x00") || strings.Contains(joined, "--setenv\x00"+key+"\x00") {
+						t.Errorf("sandbox must unset %s", key)
+					}
+				}
+				if plan.LaunchEnv["XDG_RUNTIME_DIR"] != filepath.Join(plan.State, "run") {
+					t.Fatal("outer runtime directory lost")
+				}
+				if strings.Contains(joined, "--unsetenv\x00BWRAP_AGENT_PODMAN\x00") {
+					t.Fatal("launcher-owned status was unset")
+				}
+				if podman == "on" {
+					account, err := hostAccountName(os.Environ())
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, key := range []string{"USER", "LOGNAME"} {
+						if plan.LaunchEnv[key] != account {
+							t.Errorf("outer %s lost host identity", key)
+						}
+					}
+					if strings.Contains(joined, "--unsetenv\x00CONTAINERS_STORAGE_CONF\x00") {
+						t.Fatal("required Podman configuration was unset")
+					}
+				}
+			})
+		}
+	}
+}

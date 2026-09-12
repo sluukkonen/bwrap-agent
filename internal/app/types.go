@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+const sandboxRuntimeDirectory = "/run/bwrap-agent/runtime"
+
 const internalInitMode = "__bwrap_agent_sandbox_init"
 const internalPodmanInitMode = "__bwrap_agent_podman_sandbox_init"
 const internalRuntimeMode = "__bwrap_agent_sandbox_runtime"

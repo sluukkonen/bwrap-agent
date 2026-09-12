@@ -260,16 +260,23 @@ func TestInterruptedCleanupStateStillRequiresPodman(t *testing.T) {
 }
 
 func TestPodmanCleanupEnvironmentOwnsRuntimeDirectory(t *testing.T) {
+	const account = "nss-user"
 	environment := podmanCleanupEnvironment([]string{
 		"PATH=/usr/bin",
+		"USER=wrong", "LOGNAME=wrong",
 		"XDG_RUNTIME_DIR=/unusable",
 		"CONTAINER_HOST=tcp://untrusted",
 		"CONTAINERS_STORAGE_CONF=/untrusted/storage.conf",
 		"STORAGE_DRIVER=overlay",
 		"STORAGE_OPTS=overlay.mount_program=/untrusted",
 		"PODMAN_NO_PAUSE_PROCESS=0",
-	}, "/trusted/runtime", "/trusted/storage.conf", "/trusted/containers.conf")
+	}, account, "/trusted/runtime", "/trusted/storage.conf", "/trusted/containers.conf")
 	joined := strings.Join(environment, "\n")
+	for _, key := range []string{"USER", "LOGNAME"} {
+		if strings.Count(joined, key+"=") != 1 || !strings.Contains(joined, key+"="+account) {
+			t.Fatalf("cleanup account environment = %#v", environment)
+		}
+	}
 	if strings.Count(joined, "XDG_RUNTIME_DIR=") != 1 || !strings.Contains(joined, "XDG_RUNTIME_DIR=/trusted/runtime") {
 		t.Fatalf("cleanup runtime environment = %#v", environment)
 	}

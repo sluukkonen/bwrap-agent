@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -153,5 +155,41 @@ func TestRunDirectReturnsChildStatusAndOutput(t *testing.T) {
 	}
 	if status != 7 || string(output) != "direct-output" {
 		t.Fatalf("status = %d, output = %q", status, output)
+	}
+}
+
+func TestSandboxPodmanEnvironment(t *testing.T) {
+	for _, assignment := range []string{"", "XDG_RUNTIME_DIR=", "XDG_RUNTIME_DIR=relative", "XDG_RUNTIME_DIR=/other/runtime"} {
+		t.Run(assignment, func(t *testing.T) {
+			environment := []string{"HOME=/instance/home", "CONTAINER_HOST=tcp://other", "CONTAINER_CONNECTION=other", "LISTEN_FDS=1"}
+			if assignment != "" {
+				environment = append(environment, assignment, assignment)
+			}
+			before := append([]string{}, environment...)
+			got := sandboxPodmanEnvironment(environment)
+			if !reflect.DeepEqual(environment, before) {
+				t.Fatal("target environment was modified")
+			}
+			count := 0
+			for _, entry := range got {
+				if strings.HasPrefix(entry, "XDG_RUNTIME_DIR=") {
+					count++
+					if entry != "XDG_RUNTIME_DIR="+sandboxRuntimeDirectory {
+						t.Fatalf("wrong runtime: %s", entry)
+					}
+				}
+				if strings.HasPrefix(entry, "CONTAINER_HOST=") || strings.HasPrefix(entry, "CONTAINER_CONNECTION=") {
+					t.Fatalf("remote override retained: %s", entry)
+				}
+			}
+			if count != 1 {
+				t.Fatalf("got %d runtime assignments", count)
+			}
+			for _, key := range []string{"HOME", "LISTEN_FDS"} {
+				if envValue(got, key, "") != envValue(before, key, "") {
+					t.Fatalf("lost %s", key)
+				}
+			}
+		})
 	}
 }

@@ -27,6 +27,10 @@ RUN curl -fsSL -o /tmp/passt.tar.xz \
     && ln -s passt /usr/local/bin/pasta \
     && rm -rf /tmp/passt.tar.xz "/tmp/passt-${PASST_VERSION}"
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nftables aardvark-dns \
+    && rm -rf /var/lib/apt/lists/*
+
 ARG DEV_UID=1000
 ARG DEV_GID=1000
 

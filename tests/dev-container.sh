@@ -65,10 +65,13 @@ case "$mode" in
             echo "Restore it with the same command ending in '=1', or restart the VM." >&2
             exit 1
         fi
+        # Keep test state off Docker's overlay layer so nested Podman can
+        # use native OverlayFS. --rm also removes this anonymous volume.
         exec docker run --rm \
             --privileged \
             --security-opt seccomp=unconfined \
             --cgroupns host \
+            --mount type=volume,destination=/tmp \
             --volume "$project_root:/workspace" \
             --volume "$project_root/.cache/go-build:/home/developer/.cache/go-build" \
             --volume "$project_root/.cache/go-mod:/home/developer/.cache/go-mod" \
