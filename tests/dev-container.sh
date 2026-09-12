@@ -23,8 +23,8 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-project_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+project_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 developer_uid=$(id -u)
 developer_gid=$(id -g)
 if [ "$developer_uid" -eq 0 ]; then
@@ -50,6 +50,8 @@ case "$mode" in
             --volume "$project_root/.cache/go-mod:/home/developer/.cache/go-mod" \
             --env BWRAP_AGENT_TEST_IMAGE \
             --env BWRAP_AGENT_TESTCONTAINERS \
+            --env BWRAP_AGENT_TESTCONTAINERS_CACHE \
+            --env BWRAP_AGENT_TESTCONTAINERS_COLD \
             "$image" "$@"
         ;;
     privileged)
@@ -77,6 +79,8 @@ case "$mode" in
             --volume "$project_root/.cache/go-mod:/home/developer/.cache/go-mod" \
             --env BWRAP_AGENT_TEST_IMAGE \
             --env BWRAP_AGENT_TESTCONTAINERS \
+            --env BWRAP_AGENT_TESTCONTAINERS_CACHE \
+            --env BWRAP_AGENT_TESTCONTAINERS_COLD \
             "$image" "$@"
         ;;
     shell)
@@ -86,6 +90,8 @@ case "$mode" in
             --volume "$project_root/.cache/go-mod:/home/developer/.cache/go-mod" \
             --env BWRAP_AGENT_TEST_IMAGE \
             --env BWRAP_AGENT_TESTCONTAINERS \
+            --env BWRAP_AGENT_TESTCONTAINERS_CACHE \
+            --env BWRAP_AGENT_TESTCONTAINERS_COLD \
             "$image" bash
         ;;
 esac

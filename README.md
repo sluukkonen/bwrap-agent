@@ -307,7 +307,16 @@ Privileged test runs mount a fresh anonymous Docker volume at `/tmp`. This keeps
 
 Set `BWRAP_AGENT_TEST_IMAGE` to an Alpine-compatible image available from the test environment to include Podman root/non-root execution, volumes, builds, and Compose in `make integration`. The regular suite also verifies Docker-compatible API socket activation and concurrent private sandboxes binding the same guest port.
 
-`make integration-testcontainers` runs the available Go, Node, Python, and Java Testcontainers clients against the sandbox-local Podman socket. It defaults to `docker.io/library/alpine:3.22`; override `BWRAP_AGENT_TEST_IMAGE` for an internal mirror, an air-gapped image store, or another Alpine-compatible image. It installs pinned test dependencies in disposable sandbox state, so it intentionally requires package-registry access or appropriately populated caches. The default `all` selection reports and skips client languages whose host toolchain is absent. An explicit selection such as `BWRAP_AGENT_TESTCONTAINERS=go,python` fails if either selected toolchain is unavailable. Testcontainers' Ryuk sidecar is disabled because this launcher already stops all instance containers at exit.
+`make integration-testcontainers` runs the available Go, Node, Python, and Java Testcontainers clients against the sandbox-local Podman socket. It defaults to `docker.io/library/alpine:3.22`; override `BWRAP_AGENT_TEST_IMAGE` for an internal registry or another Alpine-compatible image. The macOS development image includes all four toolchains. On native Linux, the default `all` selection reports and skips client languages whose host toolchain is absent. An explicit selection such as `BWRAP_AGENT_TESTCONTAINERS=go,python` fails if either selected toolchain is unavailable. Testcontainers' Ryuk sidecar is disabled because this launcher already stops all instance containers at exit.
+
+Each client first pulls and runs the test image, so Podman failures appear before dependency installation. The runner reports image preparation, dependency/build preparation, client execution, and total elapsed seconds, including failed phases. Dependencies and Go build artifacts persist in `.cache/testcontainers/`; projects, installed environments, and all Podman state are recreated on every run. Dependency caches reduce downloads and compilation; package managers may still contact their registries. Image-registry access is required on every run.
+
+Set `BWRAP_AGENT_TESTCONTAINERS_CACHE` to use another cache directory, or `BWRAP_AGENT_TESTCONTAINERS_COLD=1` to use a temporary cache that is removed at exit without changing the persistent cache. On macOS, an overridden path must be visible and writable inside the development container (for example `/workspace/.cache/another-cache`). Remove `.cache/testcontainers/` when no test run is active to reset the default caches. Caches contain executable build inputs and should only be shared with trusted checkouts.
+
+```console
+$ BWRAP_AGENT_TESTCONTAINERS=go,python make integration-testcontainers
+$ BWRAP_AGENT_TESTCONTAINERS_COLD=1 make integration-testcontainers
+```
 
 The launcher is a CGO-free Go executable. Standard Go modules are used through `go.mod` and `go.sum`; dependencies are not vendored.
 

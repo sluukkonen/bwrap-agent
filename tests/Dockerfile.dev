@@ -10,6 +10,13 @@ RUN apt-get update \
         fuse-overlayfs \
         iproute2 \
         iptables \
+        nodejs \
+        npm \
+        python3-venv \
+        python3-pip \
+        default-jdk-headless \
+        maven \
+        shellcheck \
         podman \
         podman-compose \
         slirp4netns \
