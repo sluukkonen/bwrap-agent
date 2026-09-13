@@ -15,6 +15,11 @@ func TestProjectConfigTemplateIsNeutralAndComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(directory, projectConfigName)
+	assertConfigTemplate(t, path, true)
+}
+
+func assertConfigTemplate(t *testing.T, path string, project bool) {
+	t.Helper()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -25,6 +30,12 @@ func TestProjectConfigTemplateIsNeutralAndComplete(t *testing.T) {
 	configType := reflect.TypeOf(fileConfig{})
 	for index := 0; index < configType.NumField(); index++ {
 		key := configType.Field(index).Tag.Get("toml")
+		if key == "instance" && !project {
+			if bytes.Contains(content, []byte("# instance =")) {
+				t.Error("user template includes project-only instance setting")
+			}
+			continue
+		}
 		setting := "# " + key + " ="
 		if key == "env" {
 			setting = "# [env]"
@@ -51,11 +62,12 @@ func TestProjectConfigTemplateIsNeutralAndComplete(t *testing.T) {
 
 func TestCreateProjectConfigAndReportCreatesFile(t *testing.T) {
 	directory := t.TempDir()
+	t.Chdir(directory)
 	var stdout bytes.Buffer
-	if err := createProjectConfigAndReport(directory, &stdout); err != nil {
+	if err := createProjectConfigAndReport(".", &stdout); err != nil {
 		t.Fatal(err)
 	}
-	if stdout.String() != "Created .bwrap-agent.toml\n" {
+	if stdout.String() != "Created "+filepath.Join(directory, projectConfigName)+"\n" {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 	info, err := os.Stat(filepath.Join(directory, projectConfigName))
@@ -67,70 +79,35 @@ func TestCreateProjectConfigAndReportCreatesFile(t *testing.T) {
 	}
 }
 
-func TestCreateProjectConfigRefusesExistingFile(t *testing.T) {
-	directory := t.TempDir()
-	path := filepath.Join(directory, projectConfigName)
-	original := []byte("existing content\n")
-	if err := os.WriteFile(path, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := createProjectConfig(directory); err == nil {
-		t.Fatal("createProjectConfig replaced an existing file")
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(content, original) {
-		t.Fatalf("existing content changed to %q", content)
-	}
-}
-
-func TestCreateProjectConfigRefusesExistingSymlink(t *testing.T) {
-	directory := t.TempDir()
-	target := filepath.Join(directory, "target")
-	path := filepath.Join(directory, projectConfigName)
-	original := []byte("target content\n")
-	if err := os.WriteFile(target, original, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, path); err != nil {
-		t.Fatal(err)
-	}
-	if err := createProjectConfig(directory); err == nil {
-		t.Fatal("createProjectConfig followed an existing symlink")
-	}
-	content, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(content, original) {
-		t.Fatalf("symlink target changed to %q", content)
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("configuration symlink was replaced: mode=%v", info.Mode())
-	}
-}
-
 func TestConfigCreateCLIIsStandalone(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	parsed, code, err := parseCLI([]string{"config", "create"}, &stdout, &stderr)
-	if err != nil || code != 0 || parsed.Command != commandConfigCreate {
+	parsed, code, err := parseCLI([]string{"config", "create", "project"}, &stdout, &stderr)
+	if err != nil || code != 0 || parsed.Command != commandConfigCreateProject {
 		t.Fatalf("parseCLI failed: parsed=%#v code=%d err=%v stderr=%q", parsed, code, err, stderr.String())
 	}
 
+	stdout.Reset()
+	stderr.Reset()
+	parsed, code, err = parseCLI([]string{"config", "create", "user"}, &stdout, &stderr)
+	if err != nil || code != 0 || parsed.Command != commandConfigCreateUser {
+		t.Fatalf("user parse failed: parsed=%#v code=%d err=%v", parsed, code, err)
+	}
+
 	for _, args := range [][]string{
-		{"config", "create", "opencode"},
-		{"config", "create", "--network", "none"},
-		{"--network", "none", "config", "create"},
+		{"config", "create"},
+		{"config", "create", "global"},
+		{"config", "create", "user", "opencode"},
+		{"config", "create", "user", "--network", "none"},
+		{"config", "create", "project", "opencode"},
+		{"config", "create", "project", "--network", "none"},
+		{"--network", "none", "config", "create", "project"},
 	} {
 		stdout.Reset()
 		stderr.Reset()
 		_, code, err := parseCLI(args, &stdout, &stderr)
+		if len(args) == 2 && (!strings.Contains(stderr.String(), "project") || !strings.Contains(stderr.String(), "user")) {
+			t.Errorf("missing scope guidance: %q", stderr.String())
+		}
 		if err == nil || code != 2 {
 			t.Fatalf("parseCLI(%q) = code=%d err=%v stderr=%q", args, code, err, stderr.String())
 		}
@@ -139,11 +116,11 @@ func TestConfigCreateCLIIsStandalone(t *testing.T) {
 
 func TestSubcommandNamesAndFlagsAfterProgramArePassedThrough(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	parsed, code, err := parseCLI([]string{"run", "config", "create", "--network", "none"}, &stdout, &stderr)
+	parsed, code, err := parseCLI([]string{"run", "config", "create", "project", "--network", "none"}, &stdout, &stderr)
 	if err != nil || code != 0 {
 		t.Fatalf("parseCLI failed: code=%d err=%v stderr=%q", code, err, stderr.String())
 	}
-	want := []string{"config", "create", "--network", "none"}
+	want := []string{"config", "create", "project", "--network", "none"}
 	if parsed.Command != commandRun || strings.Join(parsed.Run.Command, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("target arguments were interpreted by the launcher: %#v", parsed)
 	}
@@ -158,9 +135,152 @@ func TestConfigCreateParsingDoesNotLoadBrokenUserConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(configDirectory))
-	var stdout, stderr bytes.Buffer
-	parsed, code, err := parseCLI([]string{"config", "create"}, &stdout, &stderr)
-	if err != nil || code != 0 || parsed.Command != commandConfigCreate {
-		t.Fatalf("config creation was blocked by user config: code=%d err=%v stderr=%q", code, err, stderr.String())
+	for scope, command := range map[string]commandKind{"project": commandConfigCreateProject, "user": commandConfigCreateUser} {
+		var stdout, stderr bytes.Buffer
+		parsed, code, err := parseCLI([]string{"config", "create", scope}, &stdout, &stderr)
+		if err != nil || code != 0 || parsed.Command != command {
+			t.Fatalf("config creation was blocked by user config: code=%d err=%v stderr=%q", code, err, stderr.String())
+		}
+	}
+}
+
+func TestCreateUserConfigPathsAndTemplate(t *testing.T) {
+	for _, useXDG := range []bool{true, false} {
+		name := "home"
+		if useXDG {
+			name = "xdg"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HOME", root)
+			t.Setenv("XDG_CONFIG_HOME", "")
+			base := filepath.Join(root, ".config")
+			if useXDG {
+				base = filepath.Join(root, "custom", "config")
+				t.Setenv("XDG_CONFIG_HOME", base)
+			}
+			t.Chdir(root)
+			var stdout bytes.Buffer
+			if err := createUserConfigAndReport(&stdout); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(base, "bwrap-agent", "config.toml")
+			if stdout.String() != "Created "+path+"\n" {
+				t.Fatalf("stdout = %q", stdout.String())
+			}
+			for target, mode := range map[string]os.FileMode{path: 0o600, filepath.Dir(path): 0o700, base: 0o700} {
+				info, err := os.Stat(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != mode {
+					t.Errorf("%s permissions = %o, want %o", target, info.Mode().Perm(), mode)
+				}
+			}
+			if _, err := os.Lstat(filepath.Join(root, projectConfigName)); !os.IsNotExist(err) {
+				t.Fatalf("user command created a project file: %v", err)
+			}
+			assertConfigTemplate(t, path, false)
+		})
+	}
+}
+
+func TestConfigCreationRefusesExistingEntries(t *testing.T) {
+	for _, scope := range []string{"project", "user"} {
+		for _, kind := range []string{"file", "directory", "symlink", "dangling-symlink"} {
+			t.Run(scope+"/"+kind, func(t *testing.T) {
+				root := t.TempDir()
+				t.Setenv("XDG_CONFIG_HOME", root)
+				path := filepath.Join(root, projectConfigName)
+				if scope == "user" {
+					path = filepath.Join(root, "bwrap-agent", "config.toml")
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				target := filepath.Join(root, "target")
+				original := []byte("original content\n")
+				switch kind {
+				case "file":
+					if err := os.WriteFile(path, original, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				case "directory":
+					if err := os.Mkdir(path, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				case "symlink", "dangling-symlink":
+					if kind == "symlink" {
+						if err := os.WriteFile(target, original, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := os.Symlink(target, path); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var stdout bytes.Buffer
+				if scope == "user" {
+					err = createUserConfigAndReport(&stdout)
+				} else {
+					err = createProjectConfigAndReport(root, &stdout)
+				}
+				if err == nil || !strings.Contains(err.Error(), path) {
+					t.Fatalf("creation error = %v", err)
+				}
+				if stdout.Len() != 0 {
+					t.Fatalf("reported success: %q", stdout.String())
+				}
+				after, err := os.Lstat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !os.SameFile(before, after) || before.Mode() != after.Mode() {
+					t.Fatal("existing entry changed")
+				}
+				if kind == "file" || kind == "symlink" {
+					content, err := os.ReadFile(path)
+					if err != nil || !bytes.Equal(content, original) {
+						t.Fatalf("existing content changed: %q, %v", content, err)
+					}
+				}
+				if kind == "dangling-symlink" {
+					if _, err := os.Lstat(target); !os.IsNotExist(err) {
+						t.Fatalf("dangling target created: %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestConfigCreationFilesystemErrors(t *testing.T) {
+	root := t.TempDir()
+	blocker := filepath.Join(root, "file")
+	if err := os.WriteFile(blocker, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	if err := createProjectConfigAndReport(blocker, &stdout); err == nil || !strings.Contains(err.Error(), blocker) {
+		t.Fatalf("project error = %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", blocker)
+	if err := createUserConfigAndReport(&stdout); err == nil || !strings.Contains(err.Error(), blocker) {
+		t.Fatalf("user error = %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("reported success: %q", stdout.String())
+	}
+	content, err := os.ReadFile(blocker)
+	if err != nil || string(content) != "unchanged" {
+		t.Fatalf("blocker changed: %q, %v", content, err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", "relative")
+	if err := createUserConfigAndReport(&stdout); err == nil {
+		t.Fatal("accepted relative XDG_CONFIG_HOME")
 	}
 }

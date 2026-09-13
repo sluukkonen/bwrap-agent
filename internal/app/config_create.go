@@ -25,7 +25,18 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 # Default: a name derived from the project directory.
 # instance = "my-project"
 
-# Expose detected host agent configuration read-only and seed mutable
+` + commonConfigTemplate
+
+const userConfigTemplate = `# bwrap-agent user configuration
+#
+# These settings apply to all projects for the current user.
+# Settings are applied in this order: this user file, project configuration,
+# then run-command options. Uncomment only the settings you want to override.
+# Every setting below is commented out, so this file is behavior-neutral as-is.
+
+` + commonConfigTemplate
+
+const commonConfigTemplate = `# Expose detected host agent configuration read-only and seed mutable
 # credentials into instance state. Existing instance data is never cleared.
 # Default: true.
 # agent_config = true
@@ -99,13 +110,16 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 `
 
 func createProjectConfig(directory string) error {
-	path := filepath.Join(directory, projectConfigName)
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	return createConfigFile(filepath.Join(directory, projectConfigName), projectConfigTemplate, 0o644)
+}
+
+func createConfigFile(path, template string, mode fs.FileMode) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("%s already exists", projectConfigName)
+			return fmt.Errorf("%s already exists", path)
 		}
-		return fmt.Errorf("create %s: %w", projectConfigName, err)
+		return fmt.Errorf("create %s: %w", path, err)
 	}
 	complete := false
 	defer func() {
@@ -113,21 +127,40 @@ func createProjectConfig(directory string) error {
 			_ = os.Remove(path)
 		}
 	}()
-	if _, err := file.WriteString(projectConfigTemplate); err != nil {
+	if _, err := file.WriteString(template); err != nil {
 		_ = file.Close()
-		return fmt.Errorf("write %s: %w", projectConfigName, err)
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close %s: %w", projectConfigName, err)
+		return fmt.Errorf("close %s: %w", path, err)
 	}
 	complete = true
 	return nil
 }
 
 func createProjectConfigAndReport(directory string, stdout io.Writer) error {
-	if err := createProjectConfig(directory); err != nil {
+	absolute, err := filepath.Abs(directory)
+	if err != nil {
+		return fmt.Errorf("locate project configuration: %w", err)
+	}
+	if err := createProjectConfig(absolute); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(stdout, "Created %s\n", projectConfigName)
+	_, err = fmt.Fprintf(stdout, "Created %s\n", filepath.Join(absolute, projectConfigName))
+	return err
+}
+
+func createUserConfigAndReport(stdout io.Writer) error {
+	path, err := userConfigPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create parent directories for %s: %w", path, err)
+	}
+	if err := createConfigFile(path, userConfigTemplate, 0o600); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "Created %s\n", path)
 	return err
 }

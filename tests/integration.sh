@@ -46,9 +46,14 @@ config_create_project="$test_root/config-create"
 mkdir "$config_create_project"
 (
     cd "$config_create_project"
-    "$binary" config create
+    "$binary" config create project
     test -f .bwrap-agent.toml
+    "$binary" config create user
+    test -f "$XDG_CONFIG_HOME/bwrap-agent/config.toml"
     if "$binary" config create >/dev/null 2>&1; then
+        exit 1
+    fi
+    if "$binary" config create project >/dev/null 2>&1; then
         exit 1
     fi
 )

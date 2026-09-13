@@ -340,7 +340,9 @@ func TestRootAndConfigHelpExposeCommands(t *testing.T) {
 	}{
 		{[]string{"--help"}, []string{"run", "config", "instance"}},
 		{[]string{"config", "--help"}, []string{"create"}},
-		{[]string{"config", "create", "--help"}, []string{"Create a documented .bwrap-agent.toml"}},
+		{[]string{"config", "create", "--help"}, []string{"project", "user"}},
+		{[]string{"config", "create", "project", "--help"}, []string{"Create a documented .bwrap-agent.toml"}},
+		{[]string{"config", "create", "user", "--help"}, []string{"current user across all projects"}},
 		{[]string{"instance", "--help"}, []string{"list", "delete"}},
 		{[]string{"instance", "list", "--help"}, []string{"--json"}},
 		{[]string{"instance", "delete", "--help"}, []string{"--yes", "<name>"}},

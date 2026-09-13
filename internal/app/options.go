@@ -75,7 +75,10 @@ type cliOptions struct {
 }
 
 type configOptions struct {
-	Create struct{} `cmd:"" help:"Create a documented .bwrap-agent.toml in the current directory."`
+	Create struct {
+		Project struct{} `cmd:"" help:"Create a documented .bwrap-agent.toml in the current directory."`
+		User    struct{} `cmd:"" help:"Create documented configuration for the current user across all projects."`
+	} `cmd:"" help:"Create a documented project or user configuration file."`
 }
 
 type instanceListOptions struct {
@@ -102,7 +105,8 @@ type commandKind uint8
 
 const (
 	commandRun commandKind = iota + 1
-	commandConfigCreate
+	commandConfigCreateProject
+	commandConfigCreateUser
 	commandInstanceList
 	commandInstanceDelete
 )
@@ -162,8 +166,10 @@ func parseCLI(args []string, stdout, stderr io.Writer) (parsed parsedCLI, code i
 			return parsed, 2, err
 		}
 		return parsedCLI{Command: commandRun, Run: root.Run}, 0, nil
-	case "config create":
-		return parsedCLI{Command: commandConfigCreate}, 0, nil
+	case "config create project":
+		return parsedCLI{Command: commandConfigCreateProject}, 0, nil
+	case "config create user":
+		return parsedCLI{Command: commandConfigCreateUser}, 0, nil
 	case "instance list":
 		return parsedCLI{Command: commandInstanceList, InstanceList: root.Instance.List}, 0, nil
 	case "instance delete <name>":
@@ -254,8 +260,14 @@ func Main(args []string) int {
 	if err != nil || code != 0 {
 		return code
 	}
-	if parsed.Command == commandConfigCreate {
-		if err := createProjectConfigAndReport(".", os.Stdout); err != nil {
+	if parsed.Command == commandConfigCreateProject || parsed.Command == commandConfigCreateUser {
+		var err error
+		if parsed.Command == commandConfigCreateProject {
+			err = createProjectConfigAndReport(".", os.Stdout)
+		} else {
+			err = createUserConfigAndReport(os.Stdout)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
 			return 2
 		}

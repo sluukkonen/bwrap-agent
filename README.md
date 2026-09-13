@@ -79,11 +79,18 @@ Runtime behavior can be configured in TOML. The launcher loads these files in in
 Create a behavior-neutral, fully commented project configuration reference in the current directory with:
 
 ```console
-$ ./bin/bwrap-agent config create
-Created .bwrap-agent.toml
+$ ./bin/bwrap-agent config create project
+Created /path/to/project/.bwrap-agent.toml
 ```
 
-The command refuses to replace an existing file. It does not load configuration or start a sandbox.
+Create a user configuration reference that applies across all your projects with:
+
+```console
+$ ./bin/bwrap-agent config create user
+Created /home/alice/.config/bwrap-agent/config.toml
+```
+
+The user command honors `XDG_CONFIG_HOME` and creates missing parent directories. Its template omits the project-only `instance` setting. Both commands refuse to replace an existing file and do not load configuration or start a sandbox. Bare `config create` requires a scope and creates nothing.
 
 Missing files are ignored. Existing files are parsed strictly: unknown keys, invalid values, and wrong types stop the launch instead of being silently ignored. `--no-project-config` skips the project file, while `--no-config` skips both files. `--help` remains available even when a config file is broken.
 
