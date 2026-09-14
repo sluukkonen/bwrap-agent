@@ -11,23 +11,24 @@ import (
 // Exercise runner control flow without package registries, Podman, or toolchains.
 func TestTestcontainersRunner(t *testing.T) {
 	for _, tc := range []struct {
-		name, selection, fail, cold          string
-		wantError, wantLaunch, noGo, symlink bool
+		name, selection, fail, cold                       string
+		wantError, wantLaunch, wantPrivate, noGo, symlink bool
 	}{
-		{name: "warm", selection: "go", wantLaunch: true},
-		{name: "symlink cache", selection: "go", wantLaunch: true, symlink: true},
-		{name: "cold", selection: "go", cold: "1", wantLaunch: true},
+		{name: "warm", selection: "go", wantLaunch: true, wantPrivate: true},
+		{name: "symlink cache", selection: "go", wantLaunch: true, wantPrivate: true, symlink: true},
+		{name: "cold", selection: "go", cold: "1", wantLaunch: true, wantPrivate: true},
 		{name: "missing Go", selection: "go", noGo: true, wantError: true},
 		{name: "cold failure", selection: "go", cold: "1", fail: "pull", wantError: true, wantLaunch: true},
 		{name: "prepare failure", selection: "go", fail: "prepare", wantError: true, wantLaunch: true},
 		{name: "preflight failure", selection: "go", fail: "pull", wantError: true, wantLaunch: true},
 		{name: "client failure", selection: "go", fail: "client", wantError: true, wantLaunch: true},
+		{name: "private network failure", selection: "go", fail: "network", wantError: true, wantLaunch: true, wantPrivate: true},
 		{name: "unknown", selection: "go,ruby", wantError: true},
 		{name: "whitespace", selection: "go node", wantError: true},
 		{name: "invalid cold", selection: "go", cold: "yes", wantError: true},
 		{name: "empty element", selection: "go,,node", wantError: true},
 		{name: "missing explicit tool", selection: "go,java", wantError: true},
-		{name: "missing default tools", selection: "all", wantLaunch: true},
+		{name: "missing default tools", selection: "all", wantLaunch: true, wantPrivate: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -73,17 +74,24 @@ chmod +x fixture
 				t.Fatal(err)
 			}
 			write("launcher", `
-echo launch >> "$PROBE/log"
+[ "$1" = run ]
 shift
+network=
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --no-config) shift ;;
         --project) cd "$2"; shift 2 ;;
+        --network) network=$2; shift 2 ;;
         --env) case "$2" in PATH=*) ;; *) export "$2" ;; esac; shift 2 ;;
-        --*) shift 2 ;;
+        --instance|--tty|--podman|--rw-bind|--ro-bind) shift 2 ;;
+        --*) echo "unexpected launcher option: $1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
-printf '%s' "$FIXTURE_CACHE" > "$PROBE/cache-path"
+echo "launch $network" >> "$PROBE/log"
+if [ "${FIXTURE_CACHE+x}" = x ]; then
+    printf '%s' "$FIXTURE_CACHE" > "$PROBE/cache-path"
+fi
 exec "$@"
 `)
 			cache := filepath.Join(root, "cache with spaces")
@@ -108,6 +116,12 @@ exec "$@"
 			log, _ := os.ReadFile(filepath.Join(root, "log"))
 			if strings.Contains(string(log), "launch") != tc.wantLaunch {
 				t.Fatalf("unexpected log: %s; output: %s", log, output)
+			}
+			if strings.Contains(string(log), "launch private") != tc.wantPrivate {
+				t.Fatalf("unexpected private launch: %s; output: %s", log, output)
+			}
+			if tc.wantPrivate && !tc.wantError && !strings.Contains(string(output), "testcontainers-go-private-ok") {
+				t.Fatalf("private regression did not complete: %s", output)
 			}
 			if tc.fail == "prepare" && strings.Contains(string(log), "client") {
 				t.Fatalf("client ran after failed prepare: %s", log)
