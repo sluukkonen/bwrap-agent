@@ -19,16 +19,6 @@ func preparePrivateFiles(identity instanceIdentity) (string, error) {
 	if err := clearPrivateFiles(root); err != nil {
 		return "", err
 	}
-	// Only remove launcher-generated legacy files, never user Maven settings
-	// or other instance configuration. Unlinking must not follow state aliases.
-	for _, relative := range []string{
-		"config/etc/passwd", "config/etc/group", "config/etc/nsswitch.conf",
-		"config/etc/hosts", "config/etc/resolv.conf", "config/maven/settings.xml",
-	} {
-		if err := unlinkStateFile(identity.State, relative); err != nil {
-			return "", fmt.Errorf("remove legacy generated file %s: %w", relative, err)
-		}
-	}
 	return root, nil
 }
 

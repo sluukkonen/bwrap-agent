@@ -51,9 +51,6 @@ func TestPrivateFilesLifecycle(t *testing.T) {
 	if _, err := writeStateFile(root, "maven/settings-security.xml", []byte("stale secret"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeStateFile(identity.State, "config/etc/resolv.conf", []byte("legacy"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	userSettings, err := writeStateFile(identity.State, "home/.m2/settings.xml", []byte("<settings/>"), 0600)
 	if err != nil {
 		t.Fatal(err)
@@ -61,10 +58,8 @@ func TestPrivateFilesLifecycle(t *testing.T) {
 	if _, err := BuildPlan(opts); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{filepath.Join(root, "maven/settings-security.xml"), filepath.Join(identity.State, "config/etc/resolv.conf")} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("stale file remains: %s: %v", path, err)
-		}
+	if _, err := os.Stat(filepath.Join(root, "maven/settings-security.xml")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale generated file remains: %v", err)
 	}
 	if content, err := os.ReadFile(userSettings); err != nil || string(content) != "<settings/>" {
 		t.Fatalf("user settings changed: %q, %v", content, err)
@@ -177,11 +172,12 @@ func TestLaunchLeavesMavenSettingsUnmanaged(t *testing.T) {
 				t.Fatal(err)
 			}
 			root := filepath.Join(filepath.Dir(plan.State), "generated")
-			stale := []string{filepath.Join(root, "maven/settings.xml"), filepath.Join(root, "maven/settings-security.xml"), filepath.Join(plan.State, "config/maven/settings.xml")}
+			stale := []string{filepath.Join(root, "maven/settings.xml"), filepath.Join(root, "maven/settings-security.xml")}
 			for _, path := range stale {
 				writeAgentTestFile(t, path, "stale credentials")
 			}
 			originals := map[string]string{
+				filepath.Join(plan.State, "config/maven/settings.xml"):      "instance configuration",
 				filepath.Join(plan.State, "home/.m2/settings.xml"):          "<settings><proxies/></settings>",
 				filepath.Join(plan.State, "home/.m2/settings-security.xml"): "instance master secret",
 			}

@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -203,12 +201,6 @@ func TestDeletionTombstoneMatchingIsStrict(t *testing.T) {
 			t.Errorf("invalid tombstone %q matched", entry)
 		}
 	}
-	if name, valid := deletionTombstoneInstanceName(".deleting-example-with-dash-0123456789abcdef"); !valid || name != "example-with-dash" {
-		t.Fatalf("tombstone instance name = %q, %t", name, valid)
-	}
-	if _, valid := deletionTombstoneInstanceName(".deleting-example-0123456789abcdeg"); valid {
-		t.Fatal("invalid tombstone produced an instance name")
-	}
 }
 
 func TestRemoveInstanceTombstoneUsesPodmanNamespace(t *testing.T) {
@@ -367,65 +359,6 @@ func TestPodmanCleanupStateIsPrivateIsolatedAndTemporary(t *testing.T) {
 					t.Fatalf("interrupted cleanup state was not reclaimed: %v", err)
 				}
 			}
-		})
-	}
-}
-
-func TestStopPodmanPauseProcessVerifiesAndTerminatesKeeper(t *testing.T) {
-	for _, configDirectory := range []string{"config/containers", "podman/config"} {
-		t.Run(configDirectory, func(t *testing.T) {
-			root := t.TempDir()
-			store := filepath.Join(root, "instances")
-			tombstone := filepath.Join(store, ".deleting-example-0123456789abcdef")
-			pidDirectory := filepath.Join(tombstone, "state", "run", "libpod", "tmp")
-			if err := os.MkdirAll(pidDirectory, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			oldRoot := filepath.Join(store, "example")
-			command := exec.Command("/bin/sleep", "30")
-			command.Env = append(os.Environ(),
-				"_PODMAN_PAUSE=1",
-				"XDG_RUNTIME_DIR="+filepath.Join(oldRoot, "state", "run"),
-				"CONTAINERS_STORAGE_CONF="+filepath.Join(oldRoot, "state", configDirectory, "storage.conf"))
-			if err := command.Start(); err != nil {
-				t.Fatal(err)
-			}
-			waited := false
-			defer func() {
-				if !waited {
-					_ = command.Process.Kill()
-					_ = command.Wait()
-				}
-			}()
-			expectedRuntime := filepath.Join(oldRoot, "state", "run")
-			expectedStorage := filepath.Join(oldRoot, "state", configDirectory, "storage.conf")
-			deadline := time.Now().Add(time.Second)
-			for {
-				environment, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(command.Process.Pid), "environ"))
-				if err == nil && podmanPauseEnvironmentMatches(environment, expectedRuntime, expectedStorage) {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("pause process environment was not ready: %v", err)
-				}
-				time.Sleep(time.Millisecond)
-			}
-			if err := os.WriteFile(filepath.Join(pidDirectory, "pause.pid"), []byte(strconv.Itoa(command.Process.Pid)+"\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := stopPodmanPauseProcessForTombstone(tombstone); err != nil {
-				t.Fatal(err)
-			}
-			err := command.Wait()
-			waited = true
-			var exitError *exec.ExitError
-			if !errors.As(err, &exitError) {
-				t.Fatalf("pause process wait = %v, want signal exit", err)
-			}
-			if _, err := os.Lstat(filepath.Join(pidDirectory, "pause.pid")); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("pause pid file remains: %v", err)
-			}
-
 		})
 	}
 }
