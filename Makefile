@@ -6,8 +6,8 @@ PREFIX ?= /usr/local
 HOST_OS := $(shell uname -s)
 DEV_CONTAINER := ./tests/dev-container.sh
 
-.PHONY: all build test test-race vet check integration integration-maven integration-testcontainers dist install clean dev-shell \
-	build-native test-native test-race-native vet-native check-native integration-native integration-maven-native integration-testcontainers-native dist-native
+.PHONY: all build test test-race vet check integration integration-testcontainers dist install clean dev-shell \
+	build-native test-native test-race-native vet-native check-native integration-native integration-testcontainers-native dist-native
 
 all: build
 
@@ -33,9 +33,6 @@ integration-native: build-native
 integration-testcontainers-native: build-native
 	./tests/testcontainers.sh ./$(BINARY)
 
-integration-maven-native: build-native
-	./tests/maven.sh ./$(BINARY)
-
 dist-native:
 	mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GO_BUILD_FLAGS) -o dist/bwrap-agent-linux-amd64 $(GO_PACKAGE)
@@ -50,7 +47,6 @@ test-race: test-race-native
 vet: vet-native
 check: check-native
 integration: integration-native
-integration-maven: integration-maven-native
 integration-testcontainers: integration-testcontainers-native
 dist: dist-native
 else ifeq ($(HOST_OS),Darwin)
@@ -66,8 +62,6 @@ check:
 	$(DEV_CONTAINER) run make check-native
 integration:
 	$(DEV_CONTAINER) privileged make integration-native
-integration-maven:
-	$(DEV_CONTAINER) privileged make integration-maven-native
 integration-testcontainers:
 	$(DEV_CONTAINER) privileged make integration-testcontainers-native
 dist:

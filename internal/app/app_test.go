@@ -702,8 +702,7 @@ func TestReadOnlyGitOptionalLocksCanBeOverridden(t *testing.T) {
 func TestEnabledPodmanPlan(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	base := Options{
-		NoMavenConfig: true, // Keep descriptor assertions independent of host Maven files.
-		Project:       ".", Instance: "podman-plan", Network: "host", Podman: "on", Seccomp: "required", TTY: "never", Command: []string{"/bin/true"},
+		Project: ".", Instance: "podman-plan", Network: "host", Podman: "on", Seccomp: "required", TTY: "never", Command: []string{"/bin/true"},
 		UnsetEnv: []string{"BWRAP_AGENT_PODMAN"},
 	}
 	base.Project = t.TempDir()
@@ -780,8 +779,7 @@ func TestPodmanPlanInjectsExternalCommandReadOnly(t *testing.T) {
 	}
 	plan, err := BuildPlan(Options{
 		Project: ".", Instance: "podman-external-command", Network: "host", Podman: "on",
-		NoMavenConfig: true,
-		Seccomp:       "required", TTY: "never", Command: []string{executable},
+		Seccomp: "required", TTY: "never", Command: []string{executable},
 	})
 	if err != nil {
 		t.Fatal(err)

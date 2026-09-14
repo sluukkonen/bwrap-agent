@@ -45,10 +45,6 @@ const commonConfigTemplate = `# Expose detected host agent configuration read-on
 # and other referenced resources require explicit mounts. Default: true.
 # git_config = true
 
-# Inherit ~/.m2/settings.xml and its Maven 3 settings-security.xml companion.
-# Private-mode proxy setup remains enabled. Default: true.
-# maven_config = true
-
 # Network mode: "private" (HTTP/HTTPS allowlist enforced), "host"
 # (shared and unrestricted), or "none".
 # Default: "private".

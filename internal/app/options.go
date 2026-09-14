@@ -29,7 +29,6 @@ type Options struct {
 	Project                string
 	Instance               string
 	NoAgentConfig          bool
-	NoMavenConfig          bool
 	NoGitConfig            bool
 	Network                string
 	NetworkAllow           []string
@@ -55,7 +54,6 @@ type cliOptions struct {
 	Clipboard              *string    `name:"clipboard" enum:"off,wayland" placeholder:"off|wayland" help:"Host clipboard bridge: wayland accepts terminal clipboard writes via host wl-copy. Requires a PTY. Default: off."`
 	Project                *string    `name:"project" type:"path" placeholder:"PATH" help:"Expose PATH as the project directory; write behavior follows --workspace-mode (default: current directory)."`
 	Instance               *string    `name:"instance" placeholder:"NAME" help:"Use this managed instance name, overriding project configuration (default: project directory name)."`
-	MavenConfig            *bool      `name:"maven-config" negatable:"" help:"Inherit host Maven settings and Maven 3 security configuration read-only. Private proxy setup remains enabled. Default: enabled."`
 	GitConfig              *bool      `name:"git-config" negatable:"" help:"Expose standard host user Git configuration read-only. Default: enabled."`
 	AgentConfig            *bool      `name:"agent-config" negatable:"" help:"Expose detected host agent configuration read-only and seed mutable credentials. Default: enabled."`
 	NoConfig               bool       `name:"no-config" help:"Do not load user or project configuration files."`

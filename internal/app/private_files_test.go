@@ -12,7 +12,7 @@ import (
 func TestPrivateFilesLifecycle(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	opts := Options{Project: t.TempDir(), Instance: "private-files", Network: "none", Podman: "off", TTY: "never", NoMavenConfig: true, Command: []string{"/bin/true"}}
+	opts := Options{Project: t.TempDir(), Instance: "private-files", Network: "none", Podman: "off", TTY: "never", Command: []string{"/bin/true"}}
 	plan, err := BuildPlan(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -162,43 +162,51 @@ func TestPrivateFileCopyFailureIsAtomic(t *testing.T) {
 	}
 }
 
-func TestPrivateMavenSnapshotsRefreshAndRemoveCredentials(t *testing.T) {
-	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	settings := filepath.Join(home, ".m2/settings.xml")
-	security := filepath.Join(home, ".m2/settings-security.xml")
-	writeAgentTestFile(t, settings, "<settings><servers><server><password>first</password></server></servers></settings>")
-	writeAgentTestFile(t, security, "<settingsSecurity><master>secret</master></settingsSecurity>")
-	opts := Options{Project: t.TempDir(), Instance: "maven-snapshots", Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"}}
-	plan, err := BuildPlan(opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := filepath.Join(filepath.Dir(plan.State), "generated")
-	snapshot := filepath.Join(root, "maven/settings.xml")
-	writeAgentTestFile(t, settings, "<settings/>")
-	content, err := os.ReadFile(snapshot)
-	if err != nil || !strings.Contains(string(content), "first") {
-		t.Fatalf("snapshot changed with host: %q, %v", content, err)
-	}
-	if err := os.Remove(security); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := BuildPlan(opts); err != nil {
-		t.Fatal(err)
-	}
-	if content, err := os.ReadFile(snapshot); err != nil || string(content) != "<settings/>" {
-		t.Fatalf("settings did not refresh: %q, %v", content, err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "maven/settings-security.xml")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("removed security file retained: %v", err)
-	}
-	opts.NoMavenConfig = true
-	if _, err := BuildPlan(opts); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(snapshot); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("disabled inheritance retained settings: %v", err)
+func TestLaunchLeavesMavenSettingsUnmanaged(t *testing.T) {
+	for _, mode := range []string{"private", "host", "none"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			// Host settings must not be parsed, copied, or mounted.
+			writeAgentTestFile(t, filepath.Join(home, ".m2/settings.xml"), "invalid XML with host credentials")
+			writeAgentTestFile(t, filepath.Join(home, ".m2/settings-security.xml"), "host master secret")
+			opts := Options{Project: t.TempDir(), Instance: "unmanaged-maven", Network: mode, Podman: "off", TTY: "never", Command: []string{"/bin/true"}}
+			plan, err := BuildPlan(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := filepath.Join(filepath.Dir(plan.State), "generated")
+			stale := []string{filepath.Join(root, "maven/settings.xml"), filepath.Join(root, "maven/settings-security.xml"), filepath.Join(plan.State, "config/maven/settings.xml")}
+			for _, path := range stale {
+				writeAgentTestFile(t, path, "stale credentials")
+			}
+			originals := map[string]string{
+				filepath.Join(plan.State, "home/.m2/settings.xml"):          "<settings><proxies/></settings>",
+				filepath.Join(plan.State, "home/.m2/settings-security.xml"): "instance master secret",
+			}
+			for path, content := range originals {
+				writeAgentTestFile(t, path, content)
+			}
+			plan, err = BuildPlan(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, arg := range plan.Bwrap {
+				if strings.Contains(arg, "/.m2") || strings.Contains(arg, root+"/maven") {
+					t.Fatalf("unexpected Maven mount: %s", arg)
+				}
+			}
+			for _, path := range stale {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("stale Maven file remains: %s: %v", path, err)
+				}
+			}
+			for path, want := range originals {
+				if content, err := os.ReadFile(path); err != nil || string(content) != want {
+					t.Fatalf("instance settings changed: %s: %q, %v", path, content, err)
+				}
+			}
+		})
 	}
 }
