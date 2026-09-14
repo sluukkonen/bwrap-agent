@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/alecthomas/kong"
 )
@@ -242,7 +240,7 @@ func parseExitCode(err error) int {
 	return 2
 }
 
-func Main(args []string) (status int) {
+func Main(args []string) int {
 	if len(args) > 0 && args[0] == internalInitMode {
 		return sandboxInit(args[1:], false)
 	}
@@ -301,96 +299,5 @@ func Main(args []string) (status int) {
 	if err != nil || code != 0 {
 		return code
 	}
-	identity, lock, err := resolveAndLockInstance(opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
-		return 2
-	}
-	defer lock.Close()
-	if err := markInstanceUsed(identity); err != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: update instance metadata: %v\n", err)
-		return 2
-	}
-	var launchSignals chan os.Signal
-	if !opts.DryRun {
-		launchSignals = make(chan os.Signal, 8)
-		signal.Notify(launchSignals, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
-		defer signal.Stop(launchSignals)
-	}
-	plan, err := buildPlan(opts, identity)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
-		return 2
-	}
-	if plan.Bubblewrap.Legacy {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: warning: Bubblewrap %s is a temporary compatibility tier; upgrade to 0.12 or newer for the supported security boundary\n", plan.Bubblewrap.Version)
-	}
-	for _, warning := range plan.Warnings {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: warning: %s\n", warning)
-	}
-	if opts.AllowControlFileWrites && plan.WorkspaceMode == "write-through" {
-		fmt.Fprintln(os.Stderr, "bwrap-agent: warning: built-in control-file write protection is disabled for this run")
-	}
-	if opts.DryRun {
-		if err := writePlanJSON(os.Stdout, plan); err != nil {
-			fmt.Fprintf(os.Stderr, "bwrap-agent: failed to write plan: %v\n", err)
-			return 126
-		}
-		return 0
-	}
-	if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] == "1" {
-		root, launchEnv, err := createPodmanBootstrap(plan.LaunchEnv, identity)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
-			return 126
-		}
-		defer func() {
-			if err := removePodmanBootstrap(root); err != nil {
-				fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
-				if status == 0 {
-					status = 126
-				}
-			}
-		}()
-		plan.LaunchEnv = launchEnv
-	}
-	argv := plan.Argv()
-	var proxy *networkProxy
-	if plan.ProxyGuestPort != 0 {
-		policy, policyErr := parseNetworkPolicy(plan.NetworkAllow)
-		if policyErr != nil {
-			fmt.Fprintf(os.Stderr, "bwrap-agent: invalid network allowlist: %v\n", policyErr)
-			return 2
-		}
-		proxy, err = startNetworkProxy(policy)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "bwrap-agent: start network policy proxy: %v\n", err)
-			return 126
-		}
-		defer proxy.Close()
-		argv, err = plan.runtimeArgv(proxy.port(), proxy.dnsPort())
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare private network: %v\n", err)
-			return 126
-		}
-	}
-
-	select {
-	case received := <-launchSignals:
-		if sig, ok := received.(syscall.Signal); ok {
-			return 128 + int(sig)
-		}
-		return 126
-	default:
-	}
-	for _, port := range plan.Ports {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: %s 127.0.0.1:%d -> sandbox 127.0.0.1:%d\n", port.Protocol, port.Host, port.Guest)
-	}
-	if plan.TTY {
-		signal.Notify(launchSignals, syscall.SIGWINCH)
-		status = runWithPTYClipboard(argv, plan.LaunchEnv, os.Stdin, os.Stdout, launchSignals, plan.clipboardBridge)
-	} else {
-		status = runDirectSignals(argv, plan.LaunchEnv, os.Stdin, os.Stdout, os.Stderr, launchSignals)
-	}
-	return status
+	return runLaunch(opts)
 }
