@@ -152,6 +152,7 @@ func TestGitConfigSources(t *testing.T) {
 func TestGitConfigOptions(t *testing.T) {
 	project, config := t.TempDir(), t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	for _, scenario := range []struct {
 		name, user, project string
 		args                []string
@@ -169,6 +170,7 @@ func TestGitConfigOptions(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			writeAgentTestFile(t, filepath.Join(config, "bwrap-agent", "config.toml"), scenario.user)
 			writeAgentTestFile(t, filepath.Join(project, projectConfigName), scenario.project)
+			trustTestConfig(t, project)
 			args := append([]string{"run", "--project", project}, scenario.args...)
 			args = append(args, "/bin/true")
 			opts, code, err := parseOptions(args, &bytes.Buffer{}, &bytes.Buffer{})
