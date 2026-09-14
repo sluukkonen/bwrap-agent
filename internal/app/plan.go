@@ -931,27 +931,6 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		bwrap = append([]string{bwrap[0], "--unshare-net"}, bwrap[1:]...)
 	}
 
-	var outer []string
-	if podmanBin != "" {
-		outer = append(outer, podmanBin, "unshare")
-	}
-	if opts.Network == "private" {
-		outer = append(outer, pastaBin, "--quiet", "--config-net", "--splice-only")
-		if podmanBin != "" {
-			outer = append(outer, "--netns-only")
-		}
-		tcpNamespacePorts := fmt.Sprintf("%d:%s,%d:%s", proxyGuestPort, proxyPortPlaceholder, dnsGuestPort, dnsPortPlaceholder)
-		dnsNamespacePort := fmt.Sprintf("%d:%s", dnsGuestPort, dnsPortPlaceholder)
-		outer = append(outer, "--tcp-ports", "none", "--udp-ports", "none", "--tcp-ns", tcpNamespacePorts, "--udp-ns", dnsNamespacePort)
-		for _, port := range ports {
-			option := "--tcp-ports"
-			if port.Protocol == "udp" {
-				option = "--udp-ports"
-			}
-			outer = append(outer, option, fmt.Sprintf("127.0.0.1/%d:%d", port.Host, port.Guest))
-		}
-		outer = append(outer, "--")
-	}
 	launchEnv := cloneMap(environment)
 	// Podman uses USER to look up subordinate IDs before entering its user
 	// namespace. Sandbox overrides must not change the invoking account.
@@ -983,7 +962,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	return LaunchPlan{Clipboard: clipboardMode, clipboardBridge: clipboardConfig, Instance: instance, Project: project, State: state, WorkspaceMode: workspaceMode,
 		Landlock: landlockStatus, Seccomp: seccompStatus, Bubblewrap: bwrapInfo.BubblewrapStatus,
 		NetworkAllow: append([]string{}, opts.NetworkAllow...), ProxyGuestPort: proxyPort,
-		Command: command, Outer: outer,
+		Command: command, outer: outerCommand{podman: podmanBin, pasta: pastaBin},
 		Launcher: launcher,
 		Bwrap:    bwrap, Ports: ports, LaunchEnv: launchEnv,
 		TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: protectedPaths,

@@ -59,7 +59,7 @@ func assertLaunchProxyClosed(t *testing.T, proxyPort, dnsPort int) {
 }
 
 func TestLaunchSessionRuntimeLifecycle(t *testing.T) {
-	for _, scenario := range []string{"success", "child failure", "launch failure", "pending signal", "invalid policy", "invalid runtime arguments", "bootstrap failure"} {
+	for _, scenario := range []string{"success", "child failure", "launch failure", "pending signal", "invalid policy", "missing pasta", "bootstrap failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			temporary := t.TempDir()
 			t.Setenv("TMPDIR", temporary)
@@ -81,7 +81,7 @@ func TestLaunchSessionRuntimeLifecycle(t *testing.T) {
 				plan.ProxyGuestPort = 65532
 				plan.NetworkAllow = []string{"invalid"}
 				want = 2
-			case "invalid runtime arguments":
+			case "missing pasta":
 				plan.ProxyGuestPort = 65532
 				want = 126
 			case "bootstrap failure":
@@ -105,8 +105,8 @@ func TestLaunchSessionRuntimeLifecycle(t *testing.T) {
 					t.Fatalf("bootstrap disappeared before cleanup: %v", err)
 				}
 			}
-			if scenario == "invalid runtime arguments" && session.proxy == nil {
-				t.Fatal("runtime argument failure did not reach proxy startup")
+			if scenario == "missing pasta" && session.proxy == nil {
+				t.Fatal("missing pasta check did not reach proxy startup")
 			}
 			var proxyPort, dnsPort int
 			if session.proxy != nil {

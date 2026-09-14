@@ -442,7 +442,7 @@ func TestBuildPlanWithoutPodman(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Outer) != 0 || plan.LaunchEnv["BWRAP_AGENT_PODMAN"] != "0" {
+	if plan.outer != (outerCommand{}) || plan.LaunchEnv["BWRAP_AGENT_PODMAN"] != "0" {
 		t.Fatalf("unexpected no-Podman plan: %#v", plan)
 	}
 	if _, exists := plan.LaunchEnv["BWRAP_AGENT_PODMAN_SOCKET"]; exists {
@@ -619,7 +619,7 @@ func TestReadOnlyAndRequiredLandlockResolveAutomaticPodmanOff(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] != "0" || len(plan.Outer) != 0 {
+		if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] != "0" || plan.outer != (outerCommand{}) {
 			t.Fatalf("automatic Podman was not disabled: %#v", plan)
 		}
 		if test.Landlock == "required" && plan.Landlock.Effective != "enabled" {
@@ -711,7 +711,7 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] != "1" || filepath.Base(plan.Outer[0]) != "podman" || plan.Outer[1] != "unshare" {
+	if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] != "1" || filepath.Base(plan.outer.podman) != "podman" {
 		t.Fatalf("unexpected default Podman plan: %#v", plan)
 	}
 	if _, exists := plan.LaunchEnv["BWRAP_AGENT_PODMAN_SOCKET"]; exists {
@@ -893,10 +893,11 @@ func TestPrivatePortsBindHostLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(plan.Outer, "\x00")
+	outer := plan.outer.argv(plan.Ports, plan.ProxyGuestPort, proxyPortPlaceholder, dnsPortPlaceholder)
+	joined := strings.Join(outer, "\x00")
 	for _, expected := range []string{"127.0.0.1/18080:8080", "127.0.0.1/15432:5432"} {
 		if !strings.Contains(joined, expected) {
-			t.Errorf("missing %q in %#v", expected, plan.Outer)
+			t.Errorf("missing %q in %#v", expected, outer)
 		}
 	}
 	for _, expected := range []string{
@@ -904,11 +905,11 @@ func TestPrivatePortsBindHostLoopback(t *testing.T) {
 		strconv.Itoa(dnsGuestPort) + ":" + dnsPortPlaceholder,
 	} {
 		if !strings.Contains(joined, expected) {
-			t.Errorf("missing %q in %#v", expected, plan.Outer)
+			t.Errorf("missing %q in %#v", expected, outer)
 		}
 	}
 	if strings.Contains(joined, "--host-lo-to-ns-lo") || strings.Contains(joined, "--dns-forward") {
-		t.Fatalf("private plan exposes unintended host networking: %#v", plan.Outer)
+		t.Fatalf("private plan exposes unintended host networking: %#v", outer)
 	}
 	if len(plan.Launcher) < 5 || plan.Launcher[0] != "/bin/sh" || plan.Launcher[1] != "-c" || plan.Launcher[2] != `exec "$0" "$@"` || plan.Launcher[4] != internalLaunchMode {
 		t.Fatalf("private launcher does not use the system trampoline: %#v", plan.Launcher)

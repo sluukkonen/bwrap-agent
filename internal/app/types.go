@@ -2,11 +2,7 @@ package app
 
 import (
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
-	"strconv"
-	"strings"
 )
 
 const sandboxRuntimeDirectory = "/run/bwrap-agent/runtime"
@@ -42,7 +38,7 @@ type LaunchPlan struct {
 	NetworkAllow    []string
 	ProxyGuestPort  int
 	Command         []string
-	Outer           []string
+	outer           outerCommand
 	Launcher        []string
 	Bwrap           []string
 	Ports           []PortMapping
@@ -68,46 +64,6 @@ type SeccompStatus struct {
 type BubblewrapStatus struct {
 	Version string `json:"version"`
 	Legacy  bool   `json:"legacy"`
-}
-
-func (p LaunchPlan) Argv() []string {
-	argv := make([]string, 0, len(p.Outer)+len(p.Launcher)+len(p.Bwrap))
-	argv = append(argv, p.Outer...)
-	argv = append(argv, p.Launcher...)
-	argv = append(argv, p.Bwrap...)
-	return argv
-}
-
-func (p LaunchPlan) runtimeArgv(proxyHostPort, dnsHostPort int) ([]string, error) {
-	argv := p.Argv()
-	if p.ProxyGuestPort == 0 {
-		return argv, nil
-	}
-	if proxyHostPort < 1 || proxyHostPort > 65535 {
-		return nil, fmt.Errorf("invalid runtime proxy port %d", proxyHostPort)
-	}
-	if dnsHostPort < 1 || dnsHostPort > 65535 {
-		return nil, fmt.Errorf("invalid runtime DNS port %d", dnsHostPort)
-	}
-	replacedProxy, replacedDNS := false, false
-	proxyExpected := strconv.Itoa(p.ProxyGuestPort) + ":" + proxyPortPlaceholder
-	proxyReplacement := strconv.Itoa(p.ProxyGuestPort) + ":" + strconv.Itoa(proxyHostPort)
-	dnsExpected := strconv.Itoa(dnsGuestPort) + ":" + dnsPortPlaceholder
-	dnsReplacement := strconv.Itoa(dnsGuestPort) + ":" + strconv.Itoa(dnsHostPort)
-	for index := range p.Outer {
-		if strings.Contains(p.Outer[index], proxyExpected) {
-			argv[index] = strings.ReplaceAll(argv[index], proxyExpected, proxyReplacement)
-			replacedProxy = true
-		}
-		if strings.Contains(p.Outer[index], dnsExpected) {
-			argv[index] = strings.ReplaceAll(argv[index], dnsExpected, dnsReplacement)
-			replacedDNS = true
-		}
-	}
-	if !replacedProxy || !replacedDNS {
-		return nil, errors.New("private network plan is missing a runtime port placeholder")
-	}
-	return argv, nil
 }
 
 func writePlanJSON(w io.Writer, p LaunchPlan) error {

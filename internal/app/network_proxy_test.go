@@ -14,7 +14,6 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -594,19 +593,5 @@ func TestPrivateDNSProxyCloseClosesIdleTCPClients(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("DNS proxy shutdown waited for an idle TCP client")
-	}
-}
-
-func TestRuntimeProxyPortReplacement(t *testing.T) {
-	plan := LaunchPlan{Outer: []string{
-		"pasta", "--tcp-ns", strconv.Itoa(proxyGuestPort) + ":" + proxyPortPlaceholder + "," + strconv.Itoa(dnsGuestPort) + ":" + dnsPortPlaceholder,
-		"--udp-ns", strconv.Itoa(dnsGuestPort) + ":" + dnsPortPlaceholder,
-	}, ProxyGuestPort: proxyGuestPort}
-	argv, err := plan.runtimeArgv(32123, 32124)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(argv, " "); !strings.Contains(got, strconv.Itoa(proxyGuestPort)+":32123") || !strings.Contains(got, strconv.Itoa(dnsGuestPort)+":32124") || strings.Contains(got, proxyPortPlaceholder) || strings.Contains(got, dnsPortPlaceholder) {
-		t.Fatalf("runtime argv = %q", got)
 	}
 }
