@@ -119,15 +119,15 @@ func currentAccount() (name, group string) {
 	return name, group
 }
 
-func generatedAccountFiles(state string, podmanEnabled bool) (passwd, group []byte) {
+func generatedAccountFiles(state string, rootMapped bool) (passwd, group []byte) {
 	name, groupName := currentAccount()
 	home, _ := accountHome(state)
 	uid, gid := os.Getuid(), os.Getgid()
 
 	rootHome := "/root"
-	// The agent is UID 0 in the outer Podman user namespace. Point Java and
+	// Podman and private-mode pasta map the agent to UID 0. Point Java and
 	// other runtimes that consult passwd instead of HOME at the managed home.
-	if podmanEnabled || uid == 0 {
+	if rootMapped || uid == 0 {
 		rootHome = home
 	}
 	passwdLines := []string{fmt.Sprintf("root:x:0:0:root:%s:/bin/sh", rootHome)}
@@ -179,7 +179,7 @@ func generatedHosts(hostsPath, network, hostname string) ([]byte, error) {
 }
 
 func prepareGeneratedEtc(state, network string, podmanEnabled bool, hostname string) ([]injectedFile, error) {
-	passwd, group := generatedAccountFiles(state, podmanEnabled)
+	passwd, group := generatedAccountFiles(state, podmanEnabled || network == "private")
 	hosts, err := generatedHosts("/etc/hosts", network, hostname)
 	if err != nil {
 		return nil, err

@@ -120,6 +120,7 @@ Missing files are ignored. Existing files are parsed strictly: unknown keys, inv
 instance = "my-project" # project configuration only
 agent_config = true
 git_config = true
+maven_config = true
 network = "private"
 network_allow = ["https://registry.example.com", "https://*.packages.example.com"]
 podman = "auto"
@@ -174,7 +175,19 @@ $ ./bin/bwrap-agent run \
 
 An omitted port means 80 for HTTP or 443 for HTTPS; specify another port explicitly. `http://*` and `https://*` allow every valid hostname on their respective default port. A leading `*.` matches subdomains but not the parent name. Paths, credentials, queries, and fragments are rejected. Loopback, link-local, unspecified, and multicast destinations are never dialed by the host-side proxy, including when a broad rule is present.
 
-The proxy accepts ordinary HTTP and HTTPS `CONNECT`. HTTPS remains end-to-end encrypted, but the initial TLS server name must match the CONNECT destination; encrypted ClientHello is rejected because its destination cannot be verified. Software must honor the standard proxy variables in this first version. Direct sockets and non-HTTP protocols have no outside route. Podman passes the proxy variables into containers by default, so image pulls, package managers, and Testcontainers use the same policy.
+The proxy accepts ordinary HTTP and HTTPS `CONNECT`. HTTPS remains end-to-end encrypted, but the initial TLS server name must match the CONNECT destination; encrypted ClientHello is rejected because its destination cannot be verified. Clients must use the proxy environment variables or application-specific proxy settings. Direct sockets and non-HTTP protocols have no outside route. Podman passes the proxy variables into containers by default, so image pulls, package managers, and Testcontainers use the same policy.
+
+Maven inherits host `~/.m2/settings.xml` by default on every launch, including files added or changed after an instance was created. When that host file exists, it takes precedence over instance settings; its Maven 3 `~/.m2/settings-security.xml` companion is also exposed if present. Both files are read-only inside the sandbox, and existing instance files remain intact underneath. Disable host inheritance with `--no-maven-config` or `maven_config = false`, independently of Git and agent configuration.
+
+In private mode, the selected settings are overlaid with a read-only copy that replaces the proxy section and preserves mirrors, credentials, profiles, and other settings. Host and none modes expose inherited settings unchanged. Maven Central still needs an allowlist entry:
+
+```console
+$ ./bin/bwrap-agent run --network-allow https://repo.maven.apache.org mvn verify
+```
+
+When host settings are missing or inheritance is disabled, Maven uses the instance settings. To edit those, start a `--network none --no-maven-config` session. Missing mountpoint files receive minimal, credential-free XML. Supported non-UTF-8 settings (including ISO-8859-1, Windows-1252, and UTF-16) are converted to UTF-8 only in the private-mode generated copy. Malformed settings XML, XML directives, unsafe source paths, and nonregular files are rejected. Safe host symlinks follow the same validation as Git configuration; instance mountpoint symlinks are rejected. Obsolete generated settings are removed on subsequent launches so disabling inheritance or removing the host file does not leave a stale copy of host credentials visible.
+
+The launcher imports only the two named configuration files, including credentials they contain; artifact caches remain instance-local. Maven retains its normal merge with installation-wide settings. Toolchains, relocated security files, Maven 4 security configuration, and other referenced resources require explicit configuration or mounts. This applies to Maven's default settings location, including Maven started by an installed wrapper. Custom `mvn -s` settings, overridden Java `user.home`, wrapper bootstrap downloads, and Maven inside nested Podman containers require their own proxy configuration. Loopback repositories bypass the proxy. JVM proxy properties are not injected.
 
 Ordinary DNS A/AAAA lookups are available for any valid hostname, even with an empty HTTP/HTTPS allowlist. The launcher-owned resolver removes loopback, link-local, unspecified, and multicast answers. Other DNS record types are unsupported, and resolved addresses still have no direct route from the sandbox. DNS queries can carry data out of the sandbox through their names; use `--network none` when no external communication is acceptable.
 
@@ -321,6 +334,7 @@ $ make test-race
 $ make vet
 $ make check
 $ make integration
+$ make integration-maven
 $ make integration-testcontainers
 $ make dist
 $ make dev-shell
@@ -331,11 +345,13 @@ $ ./bin/bwrap-agent run --podman off --network host --dry-run /usr/bin/id
 
 The first containerized command downloads the development image and Go modules; later commands reuse `.cache/` in the checkout. If Docker is unavailable, start Docker Desktop or run `colima start`. `make install` remains Linux-only because macOS builds produce Linux executables.
 
-The two integration targets use a privileged container with Docker's seccomp profile disabled and host cgroup access. Some Colima kernels additionally set `kernel.apparmor_restrict_unprivileged_userns=1`, which prevents Bubblewrap and pasta from constructing their nested namespaces. The runner detects that setting and prints the temporary `colima ssh` command needed to disable it in a dedicated development VM; restart the VM or restore the value to `1` afterward. Native non-root Linux integration remains the authoritative security-boundary test. Use the privileged targets only on a trusted checkout. The regular `build`, `test`, `test-race`, `vet`, `check`, and `dev-shell` targets stay non-root and do not request those permissions.
+The integration targets use a privileged container with Docker's seccomp profile disabled and host cgroup access. Some Colima kernels additionally set `kernel.apparmor_restrict_unprivileged_userns=1`, which prevents Bubblewrap and pasta from constructing their nested namespaces. The runner detects that setting and prints the temporary `colima ssh` command needed to disable it in a dedicated development VM; restart the VM or restore the value to `1` afterward. Native non-root Linux integration remains the authoritative security-boundary test. Use the privileged targets only on a trusted checkout. The regular `build`, `test`, `test-race`, `vet`, `check`, and `dev-shell` targets stay non-root and do not request those permissions.
 
 Privileged test runs mount a fresh anonymous Docker volume at `/tmp`. This keeps disposable Podman state on the VM's backing filesystem instead of Docker's writable overlay layer, allowing native OverlayFS without exposing `/dev/fuse` inside the sandbox. Docker removes the volume with the container through `--rm`; dependency caches remain in `.cache/`. On native Linux, place instance state on a filesystem that supports native OverlayFS. Existing FUSE-backed instance stores are not automatically migrated; use a fresh state location rather than deleting or rewriting an existing store.
 
 Set `BWRAP_AGENT_TEST_IMAGE` to an Alpine-compatible image available from the test environment to include Podman root/non-root execution, volumes, builds, and Compose in `make integration`. The regular suite also verifies Docker-compatible API socket activation and concurrent private sandboxes binding the same guest port.
+
+`make integration-maven` requires Maven, Python 3, and `timeout`. It downloads pinned artifacts from Maven Central into empty temporary caches, checks the default and Wagon transports against allowed and denied origins, verifies a local repository bypasses the proxy, checks encrypted-password authentication against a local repository, and verifies host settings added after the first launch, opt-out, removal, and original-file preservation across network modes.
 
 `make integration-testcontainers` runs the available Go, Node, Python, and Java Testcontainers clients against the sandbox-local Podman socket. It defaults to `docker.io/library/alpine:3.22`; override `BWRAP_AGENT_TEST_IMAGE` for an internal registry or another Alpine-compatible image. The macOS development image includes all four toolchains. On native Linux, the default `all` selection reports and skips client languages whose host toolchain is absent. An explicit selection such as `BWRAP_AGENT_TESTCONTAINERS=go,python` fails if either selected toolchain is unavailable. Testcontainers' Ryuk sidecar is disabled because this launcher already stops all instance containers at exit.
 

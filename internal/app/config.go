@@ -15,6 +15,7 @@ import (
 type fileConfig struct {
 	Clipboard     *string        `toml:"clipboard"`
 	Instance      *string        `toml:"instance"`
+	MavenConfig   *bool          `toml:"maven_config"`
 	GitConfig     *bool          `toml:"git_config"`
 	AgentConfig   *bool          `toml:"agent_config"`
 	Network       *string        `toml:"network"`
@@ -47,6 +48,7 @@ type envDirective struct {
 type optionLayer struct {
 	clipboard     *string
 	instance      *string
+	mavenConfig   *bool
 	gitConfig     *bool
 	agentConfig   *bool
 	network       *string
@@ -201,6 +203,7 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 		instance:      config.Instance,
 		agentConfig:   config.AgentConfig,
 		gitConfig:     config.GitConfig,
+		mavenConfig:   config.MavenConfig,
 		network:       config.Network,
 		networkAllow:  networkAllow,
 		publish:       config.Publish,
@@ -352,6 +355,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 	}
 	agentConfig := true
 	gitConfig := true
+	mavenConfig := true
 	environment := map[string]envDirective{}
 	apply := func(layer optionLayer) {
 		if layer.clipboard != nil {
@@ -359,6 +363,9 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		}
 		if layer.instance != nil {
 			opts.Instance = *layer.instance
+		}
+		if layer.mavenConfig != nil {
+			mavenConfig = *layer.mavenConfig
 		}
 		if layer.gitConfig != nil {
 			gitConfig = *layer.gitConfig
@@ -408,6 +415,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		instance:      cli.Instance,
 		agentConfig:   cli.AgentConfig,
 		gitConfig:     cli.GitConfig,
+		mavenConfig:   cli.MavenConfig,
 		network:       cli.Network,
 		networkAllow:  cliNetworkAllow,
 		publish:       cli.Publish,
@@ -422,6 +430,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 	})
 	opts.NoAgentConfig = !agentConfig
 	opts.NoGitConfig = !gitConfig
+	opts.NoMavenConfig = !mavenConfig
 	opts.Env, opts.UnsetEnv = resolveEnvironment(environment, hostEnvironment)
 	if opts.Network == "host" && len(opts.NetworkAllow) > 0 {
 		return Options{}, fmt.Errorf("--network-allow cannot be used with --network=host")

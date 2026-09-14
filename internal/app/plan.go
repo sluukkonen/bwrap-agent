@@ -637,6 +637,10 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		state: state, project: project, gitCommon: identity.GitCommon,
 		rwBind: identity.RWBind, hostEnv: os.Environ(), config: !opts.NoAgentConfig,
 	}
+	mavenConfig, err := prepareMavenConfig(agentContext, opts.Network, !opts.NoMavenConfig)
+	if err != nil {
+		return LaunchPlan{}, fmt.Errorf("prepare Maven configuration: %w", err)
+	}
 	gitConfig, err := prepareGitConfigMounts(agentContext, !opts.NoGitConfig)
 	if err != nil {
 		return LaunchPlan{}, err
@@ -913,6 +917,12 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 			}
 		}
 		mounts.mount("--ro-bind", bind.Source, bind.Destination)
+	}
+	for _, file := range mavenConfig {
+		fd := 4 + len(descriptorSources)
+		descriptorSources = append(descriptorSources, file.Source)
+		mounts.parentDirs(file.Destination)
+		mounts.operation("--perms", file.Permissions, "--ro-bind-data", strconv.Itoa(fd), file.Destination)
 	}
 	names := make([]string, 0, len(environment))
 	for name := range environment {
