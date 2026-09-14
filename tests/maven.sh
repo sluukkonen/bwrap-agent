@@ -145,7 +145,10 @@ cmp "$fixture_host_home/.m2/settings-security.xml" "$test_root/project/inherited
 for mode in private host none; do
     run_maven --network "$mode" --no-maven-config /bin/sh -ec '
         if [ -e "$XDG_CONFIG_HOME/maven/settings.xml" ]; then
-            ! grep -q "<servers>" "$XDG_CONFIG_HOME/maven/settings.xml"
+            if grep -q "<servers>" "$XDG_CONFIG_HOME/maven/settings.xml"; then
+                echo "disabled Maven inheritance exposed host servers" >&2
+                exit 1
+            fi
         fi
         test "$(cat "$HOME/.m2/settings-security.xml")" = "<settingsSecurity/>"
     '
