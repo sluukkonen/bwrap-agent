@@ -14,7 +14,7 @@ import (
 func TestPodmanConfigSource(t *testing.T) {
 	for _, scenario := range []string{"xdg", "home", "missing", "legacy", "symlink", "dangling", "file", "project", "unreadable", "destination-symlink"} {
 		t.Run(scenario, func(t *testing.T) {
-			context := agentContext{state: t.TempDir(), project: t.TempDir()}
+			root, context := testHostContext(t)
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			config := filepath.Join(home, ".config")
@@ -30,7 +30,7 @@ func TestPodmanConfigSource(t *testing.T) {
 			case "symlink", "project", "dangling":
 				target := t.TempDir()
 				if scenario == "project" {
-					target = context.project
+					target = filepath.Join(root, "project")
 				}
 				if scenario == "dangling" {
 					target = filepath.Join(target, "missing")

@@ -333,7 +333,7 @@ func envValue(source []string, name, fallback string) string {
 	return fallback
 }
 
-func resolveCommand(context agentContext, requested []string, adapter *agentAdapter) ([]string, agentSetup, error) {
+func resolveCommand(context hostContext, requested []string, adapter *agentAdapter) ([]string, agentSetup, error) {
 	found, err := exec.LookPath(requested[0])
 	if err != nil {
 		return nil, agentSetup{}, fmt.Errorf("command not found: %s", requested[0])
@@ -355,7 +355,7 @@ func resolveCommand(context agentContext, requested []string, adapter *agentAdap
 		return adapter.resolveExternalCommand(context, requested, resolved)
 	}
 	command := append([]string{"/run/bwrap-agent/command"}, requested[1:]...)
-	return command, agentSetup{Mounts: []agentMount{{Source: resolved, Destination: "/run/bwrap-agent/command", Executable: true}}}, nil
+	return command, agentSetup{Mounts: []resourceMount{{Source: resolved, Destination: "/run/bwrap-agent/command", Executable: true}}}, nil
 }
 
 type mountBuilder struct {
@@ -619,31 +619,28 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		}
 	}
 	adapter := detectAgent(opts.Command[0])
-	agentContext := agentContext{
-		state: state, project: project, gitCommon: identity.GitCommon,
-		rwBind: identity.RWBind, hostEnv: os.Environ(), config: !opts.NoAgentConfig,
-	}
-	gitConfig, err := prepareGitConfigMounts(agentContext, !opts.NoGitConfig)
+	host := hostContext{state: state, hostEnv: os.Environ(), sources: newHostSourcePolicy(identity)}
+	gitConfig, err := prepareGitConfigMounts(host, !opts.NoGitConfig)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	var podmanMount agentMount
+	var podmanMount resourceMount
 	if podmanBin != "" {
-		podmanMount, err = preparePodmanConfigMount(agentContext)
+		podmanMount, err = preparePodmanConfigMount(host)
 		if err != nil {
 			return LaunchPlan{}, err
 		}
 		// containers/image versions that ignore XDG_CONFIG_HOME look here for
 		// registries.conf, policy.json, and related user configuration.
-		if err := validateAgentStateMountpoint(state, filepath.Join(state, "home", ".config", "containers"), podmanMount.Source); err != nil {
+		if err := validateStateMountpoint(state, filepath.Join(state, "home", ".config", "containers"), podmanMount.Source); err != nil {
 			return LaunchPlan{}, err
 		}
 	}
-	agent, err := prepareAgent(adapter, agentContext)
+	agent, err := prepareAgent(adapter, host, !opts.NoAgentConfig)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	command, commandSetup, err := resolveCommand(agentContext, opts.Command, adapter)
+	command, commandSetup, err := resolveCommand(host, opts.Command, adapter)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
@@ -659,7 +656,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		return LaunchPlan{}, errors.New("--publish requires --network private")
 	}
 	usePTY := opts.TTY == "always" || opts.TTY == "auto" && isTerminal(os.Stdin.Fd()) && isTerminal(os.Stdout.Fd())
-	clipboardMode, clipboardConfig, err := prepareClipboard(opts.Clipboard, usePTY, agentContext)
+	clipboardMode, clipboardConfig, err := prepareClipboard(opts.Clipboard, usePTY, host)
 	if err != nil {
 		return LaunchPlan{}, err
 	}

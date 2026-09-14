@@ -8,20 +8,6 @@ import (
 	"testing"
 )
 
-func testAgentContext(t *testing.T) (string, agentContext) {
-	t.Helper()
-	root := t.TempDir()
-	project := filepath.Join(root, "project")
-	state := filepath.Join(root, "state")
-	if err := os.MkdirAll(project, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := secureMkdir(state, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return root, agentContext{state: state, project: project, hostEnv: os.Environ(), config: true}
-}
-
 func writeAgentTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -32,7 +18,7 @@ func writeAgentTestFile(t *testing.T, path, content string) {
 	}
 }
 
-func mountMap(mounts []agentMount) map[string]string {
+func mountMap(mounts []resourceMount) map[string]string {
 	result := make(map[string]string, len(mounts))
 	for _, mount := range mounts {
 		result[mount.Destination] = mount.Source
@@ -57,7 +43,7 @@ func TestAgentDetection(t *testing.T) {
 }
 
 func TestOpenCodeUsesReadOnlyConfigAndSeedsAuthOnce(t *testing.T) {
-	root, context := testAgentContext(t)
+	root, context := testHostContext(t)
 	home := filepath.Join(root, "home")
 	config := filepath.Join(root, "host-config")
 	data := filepath.Join(root, "host-data")
@@ -66,7 +52,7 @@ func TestOpenCodeUsesReadOnlyConfigAndSeedsAuthOnce(t *testing.T) {
 	t.Setenv("HOME", home)
 	context.hostEnv = []string{"XDG_CONFIG_HOME=" + config, "XDG_DATA_HOME=" + data}
 
-	setup, err := prepareAgent(detectAgent("opencode"), context)
+	setup, err := prepareAgent(detectAgent("opencode"), context, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +70,7 @@ func TestOpenCodeUsesReadOnlyConfigAndSeedsAuthOnce(t *testing.T) {
 		t.Fatalf("seeded auth = %q, %v", content, err)
 	}
 	writeAgentTestFile(t, filepath.Join(data, "opencode", "auth.json"), `{"token":"changed"}`)
-	if _, err := prepareAgent(detectAgent("opencode"), context); err != nil {
+	if _, err := prepareAgent(detectAgent("opencode"), context, true); err != nil {
 		t.Fatal(err)
 	}
 	if content, _ := os.ReadFile(authPath); string(content) != `{"token":"first"}` {
@@ -93,7 +79,7 @@ func TestOpenCodeUsesReadOnlyConfigAndSeedsAuthOnce(t *testing.T) {
 }
 
 func TestOpenCodeCustomConfigOverridesAreMapped(t *testing.T) {
-	root, context := testAgentContext(t)
+	root, context := testHostContext(t)
 	configFile := filepath.Join(root, "custom.json")
 	tuiFile := filepath.Join(root, "tui.json")
 	configDirectory := filepath.Join(root, "custom-directory")
@@ -108,7 +94,7 @@ func TestOpenCodeCustomConfigOverridesAreMapped(t *testing.T) {
 		"OPENCODE_TUI_CONFIG=" + tuiFile,
 		"OPENCODE_CONFIG_DIR=" + configDirectory,
 	}
-	setup, err := prepareAgent(detectAgent("opencode"), context)
+	setup, err := prepareAgent(detectAgent("opencode"), context, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +110,7 @@ func TestOpenCodeCustomConfigOverridesAreMapped(t *testing.T) {
 }
 
 func TestPiSeparatesReadOnlyConfigAndMutableState(t *testing.T) {
-	root, context := testAgentContext(t)
+	root, context := testHostContext(t)
 	home := filepath.Join(root, "home")
 	hostAgent := filepath.Join(home, ".pi", "agent")
 	for name, content := range map[string]string{
@@ -148,7 +134,7 @@ func TestPiSeparatesReadOnlyConfigAndMutableState(t *testing.T) {
 	t.Setenv("HOME", home)
 	context.hostEnv = []string{"PI_TRUE_COLOR=1", "PI_TUI_ESC_TIMEOUT=50"}
 
-	setup, err := prepareAgent(detectAgent("pi"), context)
+	setup, err := prepareAgent(detectAgent("pi"), context, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,13 +175,12 @@ func TestPiSeparatesReadOnlyConfigAndMutableState(t *testing.T) {
 }
 
 func TestDisabledAgentConfigDoesNotExposeOrSeedHost(t *testing.T) {
-	root, context := testAgentContext(t)
+	root, context := testHostContext(t)
 	home := filepath.Join(root, "home")
 	writeAgentTestFile(t, filepath.Join(home, ".pi", "agent", "auth.json"), `{"secret":true}`)
 	t.Setenv("HOME", home)
-	context.config = false
 	context.hostEnv = []string{"PI_TRUE_COLOR=1"}
-	setup, err := prepareAgent(detectAgent("pi"), context)
+	setup, err := prepareAgent(detectAgent("pi"), context, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,12 +196,12 @@ func TestDisabledAgentConfigDoesNotExposeOrSeedHost(t *testing.T) {
 }
 
 func TestAgentConfigSourceCannotBeRetargetedThroughProject(t *testing.T) {
-	root, context := testAgentContext(t)
+	root, context := testHostContext(t)
 	secret := filepath.Join(root, "secret")
 	if err := os.Mkdir(secret, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	configBase := filepath.Join(context.project, "config")
+	configBase := filepath.Join(root, "project", "config")
 	if err := os.Mkdir(configBase, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -224,13 +209,13 @@ func TestAgentConfigSourceCannotBeRetargetedThroughProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	context.hostEnv = []string{"XDG_CONFIG_HOME=" + configBase}
-	if _, err := prepareAgent(detectAgent("opencode"), context); err == nil || !strings.Contains(err.Error(), "overlaps") {
+	if _, err := prepareAgent(detectAgent("opencode"), context, true); err == nil || !strings.Contains(err.Error(), "overlaps") {
 		t.Fatalf("unsafe source was accepted: %v", err)
 	}
 }
 
 func TestAgentConfigSourceRejectsProtectedIntermediateSymlinkHop(t *testing.T) {
-	root, context := testAgentContext(t)
+	root, context := testHostContext(t)
 	secret := filepath.Join(root, "secret")
 	configBase := filepath.Join(root, "host-config")
 	if err := os.MkdirAll(secret, 0o700); err != nil {
@@ -239,7 +224,7 @@ func TestAgentConfigSourceRejectsProtectedIntermediateSymlinkHop(t *testing.T) {
 	if err := os.MkdirAll(configBase, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	redirect := filepath.Join(context.project, "redirect")
+	redirect := filepath.Join(root, "project", "redirect")
 	if err := os.Symlink(secret, redirect); err != nil {
 		t.Fatal(err)
 	}
@@ -247,13 +232,13 @@ func TestAgentConfigSourceRejectsProtectedIntermediateSymlinkHop(t *testing.T) {
 		t.Fatal(err)
 	}
 	context.hostEnv = []string{"XDG_CONFIG_HOME=" + configBase}
-	if _, err := prepareAgent(detectAgent("opencode"), context); err == nil || !strings.Contains(err.Error(), "overlaps") {
+	if _, err := prepareAgent(detectAgent("opencode"), context, true); err == nil || !strings.Contains(err.Error(), "overlaps") {
 		t.Fatalf("protected intermediate symlink hop was accepted: %v", err)
 	}
 }
 
 func TestAgentConfigSourceRejectsProtectedSymlinkHopBeforeDotDot(t *testing.T) {
-	root, context := testAgentContext(t)
+	root, context := testHostContext(t)
 	hostDirectory := filepath.Join(root, "host")
 	secretDirectory := filepath.Join(root, "hidden", "opencode")
 	if err := os.MkdirAll(hostDirectory, 0o700); err != nil {
@@ -265,7 +250,7 @@ func TestAgentConfigSourceRejectsProtectedSymlinkHopBeforeDotDot(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "hidden", "discarded"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	redirect := filepath.Join(context.project, "redirect")
+	redirect := filepath.Join(root, "project", "redirect")
 	if err := os.Symlink(filepath.Join(root, "hidden", "discarded"), redirect); err != nil {
 		t.Fatal(err)
 	}
@@ -276,13 +261,13 @@ func TestAgentConfigSourceRejectsProtectedSymlinkHopBeforeDotDot(t *testing.T) {
 		t.Fatal(err)
 	}
 	context.hostEnv = []string{"XDG_CONFIG_HOME=" + hostDirectory}
-	if _, err := prepareAgent(detectAgent("opencode"), context); err == nil || !strings.Contains(err.Error(), "overlaps") {
+	if _, err := prepareAgent(detectAgent("opencode"), context, true); err == nil || !strings.Contains(err.Error(), "overlaps") {
 		t.Fatalf("protected symlink hop before .. was accepted: %v", err)
 	}
 }
 
 func TestPiChildMountRejectsProtectedIntermediateSymlinkHop(t *testing.T) {
-	root, context := testAgentContext(t)
+	root, context := testHostContext(t)
 	home := filepath.Join(root, "home")
 	hostAgent := filepath.Join(home, ".pi", "agent")
 	secret := filepath.Join(root, "secret.json")
@@ -290,7 +275,7 @@ func TestPiChildMountRejectsProtectedIntermediateSymlinkHop(t *testing.T) {
 	if err := os.MkdirAll(hostAgent, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	redirect := filepath.Join(context.project, "redirect")
+	redirect := filepath.Join(root, "project", "redirect")
 	if err := os.Symlink(secret, redirect); err != nil {
 		t.Fatal(err)
 	}
@@ -298,13 +283,13 @@ func TestPiChildMountRejectsProtectedIntermediateSymlinkHop(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	if _, err := prepareAgent(detectAgent("pi"), context); err == nil || !strings.Contains(err.Error(), "overlaps") {
+	if _, err := prepareAgent(detectAgent("pi"), context, true); err == nil || !strings.Contains(err.Error(), "overlaps") {
 		t.Fatalf("unsafe Pi child source was accepted: %v", err)
 	}
 }
 
 func TestAgentConfigMountDestinationCannotBeRetargetedThroughState(t *testing.T) {
-	root, context := testAgentContext(t)
+	root, context := testHostContext(t)
 	home := filepath.Join(root, "home")
 	writeAgentTestFile(t, filepath.Join(home, ".pi", "agent", "settings.json"), `{}`)
 	t.Setenv("HOME", home)
@@ -312,10 +297,10 @@ func TestAgentConfigMountDestinationCannotBeRetargetedThroughState(t *testing.T)
 	if err := os.MkdirAll(stateAgent, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(context.project, filepath.Join(stateAgent, "settings.json")); err != nil {
+	if err := os.Symlink(filepath.Join(root, "project"), filepath.Join(stateAgent, "settings.json")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := prepareAgent(detectAgent("pi"), context); err == nil || !strings.Contains(err.Error(), "unsafe agent configuration mount destination") {
+	if _, err := prepareAgent(detectAgent("pi"), context, true); err == nil || !strings.Contains(err.Error(), "unsafe state mount destination") {
 		t.Fatalf("unsafe mount destination was accepted: %v", err)
 	}
 }
@@ -334,7 +319,7 @@ func TestPiNPMEntrypointMountsPackageRoot(t *testing.T) {
 	writeAgentTestFile(t, filepath.Join(packageRoot, "package.json"), `{"name":"@earendil-works/pi-coding-agent"}`)
 	writeAgentTestFile(t, entrypoint, `#!/usr/bin/env node`)
 	requested := []string{"pi", "--version"}
-	_, context := testAgentContext(t)
+	_, context := testHostContext(t)
 	command, setup, err := resolvePiExternalCommand(context, requested, entrypoint)
 	if err != nil {
 		t.Fatal(err)

@@ -13,7 +13,7 @@ import (
 func TestGitConfigSources(t *testing.T) {
 	for _, scenario := range []string{"both", "home-only", "xdg-only", "missing", "fallback-unset", "fallback-empty", "symlink", "dangling", "directory", "fifo", "unreadable", "project", "state", "git-common", "rw-bind", "symlink-parent", "destination-symlink", "destination-parent-symlink", "destination-directory", "existing", "disabled"} {
 		t.Run(scenario, func(t *testing.T) {
-			_, context := testAgentContext(t)
+			root, context := testHostContext(t)
 			home, config := t.TempDir(), t.TempDir()
 			t.Setenv("HOME", home)
 			context.hostEnv = []string{"XDG_CONFIG_HOME=" + config}
@@ -39,21 +39,23 @@ func TestGitConfigSources(t *testing.T) {
 				target := filepath.Join(t.TempDir(), "config")
 				switch scenario {
 				case "project":
-					target = filepath.Join(context.project, "config")
+					target = filepath.Join(root, "project", "config")
 				case "state":
 					target = filepath.Join(context.state, "config-file")
 				case "git-common":
-					context.gitCommon = t.TempDir()
-					target = filepath.Join(context.gitCommon, "config")
+					gitCommon := t.TempDir()
+					context.sources = newHostSourcePolicy(instanceIdentity{Project: filepath.Join(root, "project"), State: context.state, GitCommon: gitCommon})
+					target = filepath.Join(gitCommon, "config")
 				case "rw-bind":
-					context.rwBind = []string{t.TempDir()}
-					target = filepath.Join(context.rwBind[0], "config")
+					rwBind := t.TempDir()
+					context.sources = newHostSourcePolicy(instanceIdentity{Project: filepath.Join(root, "project"), State: context.state, RWBind: []string{rwBind}})
+					target = filepath.Join(rwBind, "config")
 				}
 				if scenario != "dangling" {
 					writeAgentTestFile(t, target, "[user]\nname = Linked\n")
 				}
 				if scenario == "symlink-parent" {
-					alias := filepath.Join(context.project, "alias")
+					alias := filepath.Join(root, "project", "alias")
 					if err := os.Symlink(filepath.Dir(target), alias); err != nil {
 						t.Fatal(err)
 					}
@@ -201,7 +203,7 @@ func TestGitConfigPlan(t *testing.T) {
 					t.Fatal(err)
 				}
 				joined := strings.Join(plan.Bwrap, "\x00")
-				for _, mount := range []agentMount{
+				for _, mount := range []resourceMount{
 					{source, filepath.Join(plan.State, "home", ".gitconfig"), false},
 					{filepath.Join(config, "git", "config"), filepath.Join(plan.State, "config", "git", "config"), false},
 				} {

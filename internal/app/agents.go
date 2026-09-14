@@ -13,31 +13,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type agentMount struct {
-	Source      string
-	Destination string
-	Executable  bool
-}
-
 type agentSetup struct {
-	Mounts      []agentMount
+	Mounts      []resourceMount
 	Environment map[string]string
-}
-
-type agentContext struct {
-	state     string
-	project   string
-	gitCommon string
-	rwBind    []string
-	hostEnv   []string
-	config    bool
 }
 
 type agentAdapter struct {
 	name                   string
 	programNames           map[string]bool
-	prepare                func(agentContext) (agentSetup, error)
-	resolveExternalCommand func(agentContext, []string, string) ([]string, agentSetup, error)
+	prepare                func(hostContext, bool) (agentSetup, error)
+	resolveExternalCommand func(hostContext, []string, string) ([]string, agentSetup, error)
 }
 
 var agentAdapters = []*agentAdapter{
@@ -64,11 +49,11 @@ func detectAgent(program string) *agentAdapter {
 	return nil
 }
 
-func prepareAgent(adapter *agentAdapter, context agentContext) (agentSetup, error) {
+func prepareAgent(adapter *agentAdapter, context hostContext, config bool) (agentSetup, error) {
 	if adapter == nil || adapter.prepare == nil {
 		return agentSetup{}, nil
 	}
-	setup, err := adapter.prepare(context)
+	setup, err := adapter.prepare(context, config)
 	if err != nil {
 		return agentSetup{}, fmt.Errorf("prepare %s integration: %w", adapter.name, err)
 	}
@@ -77,112 +62,12 @@ func prepareAgent(adapter *agentAdapter, context agentContext) (agentSetup, erro
 	}
 	for _, mount := range setup.Mounts {
 		if pathWithin(context.state, mount.Destination) {
-			if err := validateAgentStateMountpoint(context.state, mount.Destination, mount.Source); err != nil {
+			if err := validateStateMountpoint(context.state, mount.Destination, mount.Source); err != nil {
 				return agentSetup{}, err
 			}
 		}
 	}
 	return setup, nil
-}
-
-func validateAgentStateMountpoint(state, destination, source string) error {
-	relative, err := filepath.Rel(state, destination)
-	if err != nil {
-		return err
-	}
-	parts, err := cleanRelative(relative)
-	if err != nil || len(parts) == 0 {
-		return fmt.Errorf("invalid agent configuration mount destination %s", destination)
-	}
-	parentFD, err := openStateDirectory(state, filepath.Join(parts[:len(parts)-1]...), 0o700)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(parentFD)
-	var destinationStat unix.Stat_t
-	err = unix.Fstatat(parentFD, parts[len(parts)-1], &destinationStat, unix.AT_SYMLINK_NOFOLLOW)
-	if errors.Is(err, unix.ENOENT) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var sourceStat unix.Stat_t
-	if err := unix.Stat(source, &sourceStat); err != nil {
-		return err
-	}
-	destinationType := destinationStat.Mode & unix.S_IFMT
-	sourceType := sourceStat.Mode & unix.S_IFMT
-	if destinationType == unix.S_IFLNK || destinationType != sourceType {
-		return fmt.Errorf("unsafe agent configuration mount destination %s", destination)
-	}
-	return nil
-}
-
-func hostEnvValue(source []string, name string) (string, bool) {
-	for _, assignment := range source {
-		key, value, found := strings.Cut(assignment, "=")
-		if found && key == name {
-			return value, true
-		}
-	}
-	return "", false
-}
-
-func agentProtectedPaths(context agentContext) []string {
-	paths := []string{context.project, context.state}
-	if context.gitCommon != "" {
-		paths = append(paths, context.gitCommon)
-	}
-	return append(paths, context.rwBind...)
-}
-
-func resolveAgentSource(context agentContext, path string, wantDirectory bool, required bool) (string, bool, error) {
-	expanded, err := expandUser(path)
-	if err != nil {
-		return "", false, err
-	}
-	lexical, err := filepath.Abs(expanded)
-	if err != nil {
-		return "", false, err
-	}
-	lexical = filepath.Clean(lexical)
-	info, err := os.Lstat(lexical)
-	if errors.Is(err, os.ErrNotExist) && !required {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	candidates, err := pathResolutionCandidates(lexical)
-	if err != nil {
-		return "", false, err
-	}
-	resolved, err := filepath.EvalSymlinks(lexical)
-	if err != nil {
-		return "", false, err
-	}
-	if resolved != lexical {
-		candidates = append(candidates, resolved)
-	}
-	for _, candidate := range candidates {
-		for _, protected := range agentProtectedPaths(context) {
-			if pathsOverlap(candidate, protected) {
-				return "", false, fmt.Errorf("agent configuration source %s overlaps sandbox-writable or project path %s", lexical, protected)
-			}
-		}
-	}
-	info, err = os.Stat(resolved)
-	if err != nil {
-		return "", false, err
-	}
-	if wantDirectory && !info.IsDir() {
-		return "", false, fmt.Errorf("agent configuration source is not a directory: %s", lexical)
-	}
-	if !wantDirectory && !info.Mode().IsRegular() {
-		return "", false, fmt.Errorf("agent configuration source is not a regular file: %s", lexical)
-	}
-	return resolved, true, nil
 }
 
 func stateRegularFileExists(state, relative string) (bool, error) {
@@ -213,12 +98,12 @@ func stateRegularFileExists(state, relative string) (bool, error) {
 	return true, nil
 }
 
-func seedAgentFile(context agentContext, source, destination string) error {
+func seedAgentFile(context hostContext, source, destination string) error {
 	exists, err := stateRegularFileExists(context.state, destination)
 	if err != nil || exists {
 		return err
 	}
-	resolved, found, err := resolveAgentSource(context, source, false, false)
+	resolved, found, err := context.sources.resolveSource(source, false, false)
 	if err != nil || !found {
 		return err
 	}
@@ -230,7 +115,7 @@ func seedAgentFile(context agentContext, source, destination string) error {
 	return err
 }
 
-func prepareOpenCode(context agentContext) (agentSetup, error) {
+func prepareOpenCode(context hostContext, config bool) (agentSetup, error) {
 	setup := agentSetup{Environment: map[string]string{}}
 	if _, err := ensureStateDirectory(context.state, "config/opencode", 0o700); err != nil {
 		return setup, err
@@ -238,7 +123,7 @@ func prepareOpenCode(context agentContext) (agentSetup, error) {
 	if _, err := ensureStateDirectory(context.state, "data/opencode", 0o700); err != nil {
 		return setup, err
 	}
-	if !context.config {
+	if !config {
 		return setup, nil
 	}
 	home, err := os.UserHomeDir()
@@ -246,12 +131,12 @@ func prepareOpenCode(context agentContext) (agentSetup, error) {
 		return setup, err
 	}
 	configBase := envValue(context.hostEnv, "XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	configSource, found, err := resolveAgentSource(context, filepath.Join(configBase, "opencode"), true, false)
+	configSource, found, err := context.sources.resolveSource(filepath.Join(configBase, "opencode"), true, false)
 	if err != nil {
 		return setup, err
 	}
 	if found {
-		setup.Mounts = append(setup.Mounts, agentMount{Source: configSource, Destination: filepath.Join(context.state, "config", "opencode")})
+		setup.Mounts = append(setup.Mounts, resourceMount{Source: configSource, Destination: filepath.Join(context.state, "config", "opencode")})
 	}
 	dataBase := envValue(context.hostEnv, "XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	if err := seedAgentFile(context, filepath.Join(dataBase, "opencode", "auth.json"), "data/opencode/auth.json"); err != nil {
@@ -270,11 +155,11 @@ func prepareOpenCode(context agentContext) (agentSetup, error) {
 		if !set || value == "" {
 			continue
 		}
-		source, _, err := resolveAgentSource(context, value, override.directory, true)
+		source, _, err := context.sources.resolveSource(value, override.directory, true)
 		if err != nil {
 			return setup, fmt.Errorf("%s: %w", override.name, err)
 		}
-		setup.Mounts = append(setup.Mounts, agentMount{Source: source, Destination: override.target})
+		setup.Mounts = append(setup.Mounts, resourceMount{Source: source, Destination: override.target})
 		setup.Environment[override.name] = override.target
 	}
 	return setup, nil
@@ -287,7 +172,7 @@ var piMutableEntries = map[string]bool{
 	"models-store.json": true,
 }
 
-func preparePi(context agentContext) (agentSetup, error) {
+func preparePi(context hostContext, config bool) (agentSetup, error) {
 	agentDirectory := filepath.Join(context.state, "home", ".pi", "agent")
 	sessionDirectory := filepath.Join(agentDirectory, "sessions")
 	setup := agentSetup{Environment: map[string]string{
@@ -302,7 +187,7 @@ func preparePi(context agentContext) (agentSetup, error) {
 			setup.Environment[name] = value
 		}
 	}
-	if !context.config {
+	if !config {
 		return setup, nil
 	}
 	home, err := os.UserHomeDir()
@@ -313,7 +198,7 @@ func preparePi(context agentContext) (agentSetup, error) {
 	if value, found := hostEnvValue(context.hostEnv, "PI_CODING_AGENT_DIR"); found && value != "" {
 		hostDirectory = value
 	}
-	sourceDirectory, found, err := resolveAgentSource(context, hostDirectory, true, false)
+	sourceDirectory, found, err := context.sources.resolveSource(hostDirectory, true, false)
 	if err != nil {
 		return setup, err
 	}
@@ -339,24 +224,24 @@ func preparePi(context agentContext) (agentSetup, error) {
 			if !info.IsDir() && !info.Mode().IsRegular() {
 				continue
 			}
-			resolved, _, err := resolveAgentSource(context, source, info.IsDir(), true)
+			resolved, _, err := context.sources.resolveSource(source, info.IsDir(), true)
 			if err != nil {
 				return setup, err
 			}
-			setup.Mounts = append(setup.Mounts, agentMount{Source: resolved, Destination: filepath.Join(agentDirectory, entry.Name())})
+			setup.Mounts = append(setup.Mounts, resourceMount{Source: resolved, Destination: filepath.Join(agentDirectory, entry.Name())})
 		}
 	}
-	globalSkills, found, err := resolveAgentSource(context, filepath.Join(home, ".agents", "skills"), true, false)
+	globalSkills, found, err := context.sources.resolveSource(filepath.Join(home, ".agents", "skills"), true, false)
 	if err != nil {
 		return setup, err
 	}
 	if found {
-		setup.Mounts = append(setup.Mounts, agentMount{Source: globalSkills, Destination: filepath.Join(context.state, "home", ".agents", "skills")})
+		setup.Mounts = append(setup.Mounts, resourceMount{Source: globalSkills, Destination: filepath.Join(context.state, "home", ".agents", "skills")})
 	}
 	return setup, nil
 }
 
-func resolvePiExternalCommand(context agentContext, requested []string, resolved string) ([]string, agentSetup, error) {
+func resolvePiExternalCommand(context hostContext, requested []string, resolved string) ([]string, agentSetup, error) {
 	for directory := filepath.Dir(resolved); directory != filepath.Dir(directory); directory = filepath.Dir(directory) {
 		content, err := os.ReadFile(filepath.Join(directory, "package.json"))
 		if errors.Is(err, fs.ErrNotExist) {
@@ -375,7 +260,7 @@ func resolvePiExternalCommand(context agentContext, requested []string, resolved
 		if err != nil {
 			return nil, agentSetup{}, fmt.Errorf("Pi requires node in the host PATH")
 		}
-		runtime, _, err = resolveAgentSource(context, runtime, false, true)
+		runtime, _, err = context.sources.resolveSource(runtime, false, true)
 		if err != nil {
 			return nil, agentSetup{}, fmt.Errorf("resolve Pi node runtime: %w", err)
 		}
@@ -386,7 +271,7 @@ func resolvePiExternalCommand(context agentContext, requested []string, resolved
 		destination := "/run/bwrap-agent/command-package"
 		command := append([]string{filepath.Join(destination, relative)}, requested[1:]...)
 		commandSetup := agentSetup{
-			Mounts: []agentMount{
+			Mounts: []resourceMount{
 				{Source: runtime, Destination: "/run/bwrap-agent/agent-runtime/node", Executable: true},
 				{Source: directory, Destination: destination},
 			},
@@ -397,5 +282,5 @@ func resolvePiExternalCommand(context agentContext, requested []string, resolved
 		return command, commandSetup, nil
 	}
 	command := append([]string{"/run/bwrap-agent/command"}, requested[1:]...)
-	return command, agentSetup{Mounts: []agentMount{{Source: resolved, Destination: "/run/bwrap-agent/command", Executable: true}}}, nil
+	return command, agentSetup{Mounts: []resourceMount{{Source: resolved, Destination: "/run/bwrap-agent/command", Executable: true}}}, nil
 }

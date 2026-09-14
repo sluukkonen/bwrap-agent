@@ -29,7 +29,7 @@ type clipboardBridgeConfig struct {
 	environment []string
 }
 
-func prepareClipboard(mode string, tty bool, host agentContext) (string, *clipboardBridgeConfig, error) {
+func prepareClipboard(mode string, tty bool, host hostContext) (string, *clipboardBridgeConfig, error) {
 	if mode == "" {
 		mode = "off"
 	}
@@ -46,7 +46,7 @@ func prepareClipboard(mode string, tty bool, host agentContext) (string, *clipbo
 	if err != nil {
 		return "", nil, fmt.Errorf("clipboard: install host wl-clipboard: %w", err)
 	}
-	program, _, err = resolveAgentSource(host, program, false, true)
+	program, _, err = host.sources.resolveSource(program, false, true)
 	if err != nil {
 		return "", nil, fmt.Errorf("clipboard helper: %w", err)
 	}
@@ -64,20 +64,9 @@ func prepareClipboard(mode string, tty bool, host agentContext) (string, *clipbo
 		}
 		display = filepath.Join(runtime, display)
 	}
-	candidates, err := pathResolutionCandidates(display)
+	display, err = host.sources.resolvePath(display)
 	if err != nil {
 		return "", nil, fmt.Errorf("clipboard socket: %w", err)
-	}
-	display, err = filepath.EvalSymlinks(display)
-	if err != nil {
-		return "", nil, fmt.Errorf("clipboard socket: %w", err)
-	}
-	for _, candidate := range append(candidates, display) {
-		for _, writable := range agentProtectedPaths(host) {
-			if pathsOverlap(candidate, writable) {
-				return "", nil, fmt.Errorf("clipboard socket overlaps sandbox-writable or project path %s", writable)
-			}
-		}
 	}
 	info, err := os.Stat(display)
 	if err != nil {

@@ -72,11 +72,6 @@ func resolveGitPath(base, value string) (string, error) {
 	return resolved, nil
 }
 
-func pathWithin(parent, child string) bool {
-	relative, err := filepath.Rel(parent, child)
-	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}
-
 func externalPath(path, project string) string {
 	if pathWithin(project, path) {
 		return ""

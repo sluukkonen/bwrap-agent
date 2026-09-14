@@ -111,9 +111,9 @@ func FuzzClipboardParser(f *testing.F) {
 	})
 }
 
-func clipboardTestConfig(t *testing.T) (agentContext, string) {
+func clipboardTestConfig(t *testing.T) (hostContext, string) {
 	t.Helper()
-	root, host := testAgentContext(t)
+	root, host := testHostContext(t)
 	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func clipboardTestConfig(t *testing.T) (agentContext, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { listener.Close() })
-	host.hostEnv = []string{"XDG_RUNTIME_DIR=" + root, "WAYLAND_DISPLAY=wayland-0", "LD_PRELOAD=untrusted", "TMPDIR=" + host.project}
+	host.hostEnv = []string{"XDG_RUNTIME_DIR=" + root, "WAYLAND_DISPLAY=wayland-0", "LD_PRELOAD=untrusted", "TMPDIR=" + filepath.Join(filepath.Dir(host.state), "project")}
 	return host, program
 }
 
@@ -140,21 +140,21 @@ func TestPrepareClipboard(t *testing.T) {
 		t.Fatalf("prepare: %s %#v %v", mode, config, err)
 	}
 	for _, value := range config.environment {
-		if strings.HasPrefix(value, "LD_") || strings.Contains(value, host.project) {
+		if strings.HasPrefix(value, "LD_") || strings.Contains(value, filepath.Join(filepath.Dir(host.state), "project")) {
 			t.Fatalf("unsafe environment %q", value)
 		}
 	}
 	for _, mode := range []string{"", "off"} {
-		if got, cfg, err := prepareClipboard(mode, false, agentContext{}); got != "off" || cfg != nil || err != nil {
+		if got, cfg, err := prepareClipboard(mode, false, hostContext{}); got != "off" || cfg != nil || err != nil {
 			t.Fatalf("off: %q %v %v", got, cfg, err)
 		}
 	}
 	for _, tc := range []struct {
 		name, mode string
 		tty        bool
-		host       agentContext
+		host       hostContext
 	}{
-		{"mode", "invalid", true, host}, {"pty", "wayland", false, host}, {"display", "wayland", true, agentContext{}},
+		{"mode", "invalid", true, host}, {"pty", "wayland", false, host}, {"display", "wayland", true, hostContext{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, _, err := prepareClipboard(tc.mode, tc.tty, tc.host); err == nil {
@@ -162,11 +162,12 @@ func TestPrepareClipboard(t *testing.T) {
 			}
 		})
 	}
-	host.rwBind = []string{filepath.Dir(program)}
+	originalPolicy := host.sources
+	host.sources = newHostSourcePolicy(instanceIdentity{Project: filepath.Join(filepath.Dir(host.state), "project"), State: host.state, RWBind: []string{filepath.Dir(program)}})
 	if _, _, err := prepareClipboard("wayland", true, host); err == nil {
 		t.Fatal("accepted writable helper")
 	}
-	host.rwBind = nil
+	host.sources = originalPolicy
 	host.hostEnv = []string{"WAYLAND_DISPLAY=" + program}
 	if _, _, err := prepareClipboard("wayland", true, host); err == nil {
 		t.Fatal("accepted regular-file display")
@@ -335,7 +336,7 @@ func TestClipboardPlanDoesNotExposeDesktop(t *testing.T) {
 		key, value, _ := strings.Cut(entry, "=")
 		t.Setenv(key, value)
 	}
-	opts := controlTestOptions(host.project, "clipboard-plan")
+	opts := controlTestOptions(filepath.Join(filepath.Dir(host.state), "project"), "clipboard-plan")
 	opts.NoAgentConfig = true
 	opts.TTY = "always"
 	before, err := BuildPlan(opts)
@@ -365,7 +366,7 @@ func TestClipboardPlanDoesNotExposeDesktop(t *testing.T) {
 
 func TestClipboardRejectsWritableSymlinkHops(t *testing.T) {
 	host, program := clipboardTestConfig(t)
-	link := filepath.Join(host.project, "helper")
+	link := filepath.Join(filepath.Dir(host.state), "project", "helper")
 	if err := os.Symlink(program, link); err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +392,7 @@ func TestClipboardRejectsWritableSymlinkHops(t *testing.T) {
 		t.Fatal(err)
 	}
 	socket := filepath.Join(filepath.Dir(filepath.Dir(program)), "wayland-0")
-	socketLink := filepath.Join(host.project, "display")
+	socketLink := filepath.Join(filepath.Dir(host.state), "project", "display")
 	if err := os.Symlink(socket, socketLink); err != nil {
 		t.Fatal(err)
 	}

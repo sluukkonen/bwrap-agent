@@ -8,7 +8,7 @@ import (
 
 // prepareGitConfigMounts exposes only the standard user files. Git resolves
 // includes and other path settings itself within the sandbox filesystem.
-func prepareGitConfigMounts(context agentContext, enabled bool) ([]agentMount, error) {
+func prepareGitConfigMounts(context hostContext, enabled bool) ([]resourceMount, error) {
 	if !enabled {
 		return nil, nil
 	}
@@ -20,12 +20,12 @@ func prepareGitConfigMounts(context agentContext, enabled bool) ([]agentMount, e
 	if configHome == "" {
 		configHome = filepath.Join(home, ".config")
 	}
-	var mounts []agentMount
-	for _, candidate := range []agentMount{
+	var mounts []resourceMount
+	for _, candidate := range []resourceMount{
 		{Source: filepath.Join(home, ".gitconfig"), Destination: filepath.Join(context.state, "home", ".gitconfig")},
 		{Source: filepath.Join(configHome, "git", "config"), Destination: filepath.Join(context.state, "config", "git", "config")},
 	} {
-		source, found, err := resolveAgentSource(context, candidate.Source, false, false)
+		source, found, err := context.sources.resolveSource(candidate.Source, false, false)
 		if err != nil {
 			return nil, fmt.Errorf("resolve Git user configuration %s: %w", candidate.Source, err)
 		}
@@ -41,10 +41,10 @@ func prepareGitConfigMounts(context agentContext, enabled bool) ([]agentMount, e
 		if err := file.Close(); err != nil {
 			return nil, fmt.Errorf("close Git user configuration %s: %w", candidate.Source, err)
 		}
-		if err := validateAgentStateMountpoint(context.state, candidate.Destination, source); err != nil {
+		if err := validateStateMountpoint(context.state, candidate.Destination, source); err != nil {
 			return nil, fmt.Errorf("prepare Git user configuration destination: %w", err)
 		}
-		mounts = append(mounts, agentMount{Source: source, Destination: candidate.Destination})
+		mounts = append(mounts, resourceMount{Source: source, Destination: candidate.Destination})
 	}
 	return mounts, nil
 }

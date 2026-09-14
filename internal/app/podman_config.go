@@ -28,25 +28,25 @@ func writeStorageConfig(state string) (string, error) {
 
 // preparePodmanConfigMount keeps user configuration read-only while allowing
 // Podman to load its own configuration files and drop-ins normally.
-func preparePodmanConfigMount(context agentContext) (agentMount, error) {
+func preparePodmanConfigMount(context hostContext) (resourceMount, error) {
 	configHome, err := os.UserConfigDir()
 	if err != nil {
-		return agentMount{}, fmt.Errorf("locate Podman user configuration: %w", err)
+		return resourceMount{}, fmt.Errorf("locate Podman user configuration: %w", err)
 	}
-	source, found, err := resolveAgentSource(context, filepath.Join(configHome, "containers"), true, false)
+	source, found, err := context.sources.resolveSource(filepath.Join(configHome, "containers"), true, false)
 	if err != nil {
-		return agentMount{}, fmt.Errorf("resolve Podman user configuration: %w", err)
+		return resourceMount{}, fmt.Errorf("resolve Podman user configuration: %w", err)
 	}
 	if !found {
 		// Hide legacy generated configuration even on reused instances.
 		source, err = ensureStateDirectory(context.state, "podman/config/empty-user-config", 0o700)
 		if err != nil {
-			return agentMount{}, err
+			return resourceMount{}, err
 		}
 	}
-	mount := agentMount{Source: source, Destination: filepath.Join(context.state, "config", "containers")}
-	if err := validateAgentStateMountpoint(context.state, mount.Destination, mount.Source); err != nil {
-		return agentMount{}, err
+	mount := resourceMount{Source: source, Destination: filepath.Join(context.state, "config", "containers")}
+	if err := validateStateMountpoint(context.state, mount.Destination, mount.Source); err != nil {
+		return resourceMount{}, err
 	}
 	return mount, nil
 }

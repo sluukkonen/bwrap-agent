@@ -213,3 +213,37 @@ func writeStateFileFrom(state, relative string, content io.Reader, mode uint32) 
 	created = false
 	return filepath.Join(state, relative), nil
 }
+
+func validateStateMountpoint(state, destination, source string) error {
+	relative, err := filepath.Rel(state, destination)
+	if err != nil {
+		return err
+	}
+	parts, err := cleanRelative(relative)
+	if err != nil || len(parts) == 0 {
+		return fmt.Errorf("invalid state mount destination %s", destination)
+	}
+	parentFD, err := openStateDirectory(state, filepath.Join(parts[:len(parts)-1]...), 0o700)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(parentFD)
+	var destinationStat unix.Stat_t
+	err = unix.Fstatat(parentFD, parts[len(parts)-1], &destinationStat, unix.AT_SYMLINK_NOFOLLOW)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var sourceStat unix.Stat_t
+	if err := unix.Stat(source, &sourceStat); err != nil {
+		return err
+	}
+	destinationType := destinationStat.Mode & unix.S_IFMT
+	sourceType := sourceStat.Mode & unix.S_IFMT
+	if destinationType == unix.S_IFLNK || destinationType != sourceType {
+		return fmt.Errorf("unsafe state mount destination %s", destination)
+	}
+	return nil
+}
