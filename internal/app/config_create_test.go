@@ -53,7 +53,7 @@ func assertConfigTemplate(t *testing.T, path string, project bool) {
 	if err != nil || !found {
 		t.Fatalf("generated configuration did not load: found=%v err=%v", found, err)
 	}
-	if layer.instance != nil || layer.agentConfig != nil || layer.network != nil || len(layer.networkAllow) != 0 || len(layer.publish) != 0 ||
+	if layer.instance != nil || layer.agentConfig != nil || layer.gitConfig != nil || layer.network != nil || len(layer.networkAllow) != 0 || len(layer.publish) != 0 ||
 		layer.podman != nil || layer.workspaceMode != nil || layer.landlock != nil || layer.seccomp != nil || len(layer.roBind) != 0 ||
 		len(layer.rwBind) != 0 || len(layer.environment) != 0 || layer.tty != nil || layer.clipboard != nil {
 		t.Fatalf("generated configuration is not neutral: %#v", layer)

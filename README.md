@@ -42,7 +42,11 @@ For Pi, the host directory selected by `PI_CODING_AGENT_DIR` (normally `~/.pi/ag
 
 Configuration references to arbitrary files outside an agent's configuration tree are not exposed automatically. Add a deliberate `--ro-bind` and ensure the configured sandbox path resolves to that mount when such a reference is required.
 
-The sandbox builds `/etc` from a small runtime allowlist instead of exposing the host directory. Account and NSS files are generated for the sandbox; loader configuration, selected Java and Maven runtime configuration, public CA trust, timezone and operating-system identification are mounted read-only when present. Distribution CA roots linked from those paths, including `/var/lib/ca-certificates`, are also mounted without exposing the surrounding hierarchy. Podman adds only its registry/signature policy and required host security configuration. Host account inventories, machine identity, SSH configuration, global Git configuration, unrelated package-manager configuration, and registry client credentials are not exposed by default. `/opt` and `/nix/store` are also absent unless selected explicitly with `--ro-bind` or `ro_bind`.
+User Git configuration is exposed read-only by default for every command: host `~/.gitconfig` is mounted at sandbox `$HOME/.gitconfig`, and `$XDG_CONFIG_HOME/git/config` (falling back to `~/.config/git/config` when XDG is unset or empty) is mounted at sandbox `$XDG_CONFIG_HOME/git/config`. Git retains its normal configuration precedence, including repository overrides. Host edits are picked up on the next launch; existing instance files are covered by mounts without being overwritten. Disable automatic exposure with `--no-git-config` or `git_config = false`; this is independent of `--no-agent-config` and never deletes instance data.
+
+These files are exposed in full, including any embedded credentials and settings for signing, hooks, and credential helpers. Referenced resources and included files are not automatically mounted, and signing settings are not disabled. Relative includes resolve from the sandbox config file location, and `~/` references use the sandbox home. Add explicit mounts at paths those references can reach. Custom `GIT_CONFIG_GLOBAL` files require explicit `--ro-bind` and `--env GIT_CONFIG_GLOBAL=...` settings; host Git environment overrides are not inherited automatically. Only the two standard config files are mounted, not the whole XDG Git directory.
+
+The sandbox builds `/etc` from a small runtime allowlist instead of exposing the host directory. Account and NSS files are generated for the sandbox; loader configuration, selected Java and Maven runtime configuration, public CA trust, timezone and operating-system identification are mounted read-only when present. Distribution CA roots linked from those paths, including `/var/lib/ca-certificates`, are also mounted without exposing the surrounding hierarchy. Podman adds only its registry/signature policy and required host security configuration. Host account inventories, machine identity, SSH configuration, system-wide Git configuration, unrelated package-manager configuration, and registry client credentials are not exposed by default. `/opt` and `/nix/store` are also absent unless selected explicitly with `--ro-bind` or `ro_bind`.
 
 By default, the instance uses a readable name derived from the project directory (for example, `bwrap-agent`). Returning to the same canonical project reuses its sandbox home, agent credentials, dependency caches, images, containers, and volumes. If that readable name already belongs to another project, a short hash of the canonical path is appended. Different worktree directory names therefore normally receive distinct instances automatically.
 
@@ -113,6 +117,7 @@ Missing files are ignored. Existing files are parsed strictly: unknown keys, inv
 ```toml
 instance = "my-project" # project configuration only
 agent_config = true
+git_config = true
 network = "private"
 network_allow = ["https://registry.example.com", "https://*.packages.example.com"]
 podman = "auto"

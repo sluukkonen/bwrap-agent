@@ -41,6 +41,10 @@ const commonConfigTemplate = `# Expose detected host agent configuration read-on
 # Default: true.
 # agent_config = true
 
+# Expose ~/.gitconfig and the XDG Git config file read-only. Included files
+# and other referenced resources require explicit mounts. Default: true.
+# git_config = true
+
 # Network mode: "private" (HTTP/HTTPS allowlist enforced), "host"
 # (shared and unrestricted), or "none".
 # Default: "private".

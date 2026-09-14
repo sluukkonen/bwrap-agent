@@ -15,6 +15,7 @@ import (
 type fileConfig struct {
 	Clipboard     *string        `toml:"clipboard"`
 	Instance      *string        `toml:"instance"`
+	GitConfig     *bool          `toml:"git_config"`
 	AgentConfig   *bool          `toml:"agent_config"`
 	Network       *string        `toml:"network"`
 	NetworkAllow  []string       `toml:"network_allow"`
@@ -46,6 +47,7 @@ type envDirective struct {
 type optionLayer struct {
 	clipboard     *string
 	instance      *string
+	gitConfig     *bool
 	agentConfig   *bool
 	network       *string
 	networkAllow  []string
@@ -198,6 +200,7 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 		clipboard:     config.Clipboard,
 		instance:      config.Instance,
 		agentConfig:   config.AgentConfig,
+		gitConfig:     config.GitConfig,
 		network:       config.Network,
 		networkAllow:  networkAllow,
 		publish:       config.Publish,
@@ -348,6 +351,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		ConfigFiles:            append([]ConfigSource(nil), sources...),
 	}
 	agentConfig := true
+	gitConfig := true
 	environment := map[string]envDirective{}
 	apply := func(layer optionLayer) {
 		if layer.clipboard != nil {
@@ -355,6 +359,9 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		}
 		if layer.instance != nil {
 			opts.Instance = *layer.instance
+		}
+		if layer.gitConfig != nil {
+			gitConfig = *layer.gitConfig
 		}
 		if layer.agentConfig != nil {
 			agentConfig = *layer.agentConfig
@@ -400,6 +407,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		clipboard:     cli.Clipboard,
 		instance:      cli.Instance,
 		agentConfig:   cli.AgentConfig,
+		gitConfig:     cli.GitConfig,
 		network:       cli.Network,
 		networkAllow:  cliNetworkAllow,
 		publish:       cli.Publish,
@@ -413,6 +421,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		tty:           cli.TTY,
 	})
 	opts.NoAgentConfig = !agentConfig
+	opts.NoGitConfig = !gitConfig
 	opts.Env, opts.UnsetEnv = resolveEnvironment(environment, hostEnvironment)
 	if opts.Network == "host" && len(opts.NetworkAllow) > 0 {
 		return Options{}, fmt.Errorf("--network-allow cannot be used with --network=host")

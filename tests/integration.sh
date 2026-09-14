@@ -720,4 +720,6 @@ if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     printf 'podman-instance-delete-ok\n'
 fi
 
+sh "$script_dir/git-config.sh" "$binary" "$test_root"
+
 sh "$script_dir/podman-config.sh" "$binary" "$test_root"

@@ -637,6 +637,10 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		state: state, project: project, gitCommon: identity.GitCommon,
 		rwBind: identity.RWBind, hostEnv: os.Environ(), config: !opts.NoAgentConfig,
 	}
+	gitConfig, err := prepareGitConfigMounts(agentContext, !opts.NoGitConfig)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
 	var podmanMount agentMount
 	if podmanBin != "" {
 		podmanMount, err = preparePodmanConfigMount(agentContext)
@@ -866,6 +870,9 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	}
 	for _, bind := range controlMounts {
 		mounts.mount(bind.option, bind.source, bind.destination)
+	}
+	for _, bind := range gitConfig {
+		mounts.mount("--ro-bind", bind.Source, bind.Destination)
 	}
 	for _, bind := range agent.Mounts {
 		mounts.mount("--ro-bind", bind.Source, bind.Destination)
