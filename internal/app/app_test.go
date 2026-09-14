@@ -116,7 +116,7 @@ func TestStateFileReplacesSymlinkWithoutFollowingIt(t *testing.T) {
 	if err := os.Symlink(victim, generated); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := prepareGeneratedEtc(state, "private", false, "agent-test"); err != nil {
+	if _, err := writeStateFile(state, "config/etc/resolv.conf", []byte("generated"), 0o444); err != nil {
 		t.Fatal(err)
 	}
 	content, _ := os.ReadFile(victim)
@@ -452,10 +452,10 @@ func TestBuildPlanWithoutPodman(t *testing.T) {
 	if strings.Contains(joined, "/bin/sh") || !strings.Contains(joined, internalInitMode) || !strings.Contains(joined, "--new-session") {
 		t.Fatalf("unexpected bwrap argv: %#v", plan.Bwrap)
 	}
-	if plan.Seccomp.Effective != "enabled" || plan.Seccomp.Profile != seccompProfileDevelopment || !strings.Contains(joined, "--seccomp\x008") {
+	if plan.Seccomp.Effective != "enabled" || plan.Seccomp.Profile != seccompProfileDevelopment || !strings.Contains(joined, "--seccomp\x003") {
 		t.Fatalf("development seccomp profile is missing: %#v", plan)
 	}
-	if len(plan.Launcher) != 9 || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfileDevelopment || plan.Launcher[8] != "--" {
+	if len(plan.Launcher) != 5 || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfileDevelopment || plan.Launcher[4] != "--" {
 		t.Fatalf("development seccomp descriptor source is missing: %#v", plan.Launcher)
 	}
 }
@@ -473,7 +473,7 @@ func TestBuildPlanMountsPasswdSafeHomeAlias(t *testing.T) {
 	if plan.LaunchEnv["HOME"] != realHome {
 		t.Fatalf("HOME = %q, want %q", plan.LaunchEnv["HOME"], realHome)
 	}
-	passwd, err := os.ReadFile(filepath.Join(plan.State, "config", "etc", "passwd"))
+	passwd, err := os.ReadFile(filepath.Join(filepath.Dir(plan.State), "generated", "etc", "passwd"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +500,7 @@ func TestSeccompOffOmitsFilter(t *testing.T) {
 	if strings.Contains(strings.Join(plan.Bwrap, "\x00"), "--seccomp") {
 		t.Fatalf("disabled seccomp remained in Bubblewrap plan: %#v", plan.Bwrap)
 	}
-	if len(plan.Launcher) != 7 || plan.Launcher[6] != "--" {
+	if len(plan.Launcher) != 3 || plan.Launcher[2] != "--" {
 		t.Fatalf("disabled seccomp remained in launcher plan: %#v", plan.Launcher)
 	}
 }
@@ -731,7 +731,7 @@ func TestEnabledPodmanPlan(t *testing.T) {
 		t.Fatalf("sandbox runtime directory is not private and short: %#v", plan.Bwrap)
 	}
 	joined := strings.Join(plan.Bwrap, "\x00")
-	if plan.Seccomp.Effective != "enabled" || plan.Seccomp.Profile != seccompProfilePodman || !strings.Contains(joined, "--seccomp\x008") {
+	if plan.Seccomp.Effective != "enabled" || plan.Seccomp.Profile != seccompProfilePodman || !strings.Contains(joined, "--seccomp\x003") {
 		t.Fatalf("Podman seccomp profile is missing: %#v", plan)
 	}
 	if !strings.Contains(joined, "/run/bwrap-agent/init\x00"+internalPodmanInitMode) || strings.Contains(joined, "/run/bwrap-agent/init\x00"+internalInitMode) {
@@ -745,9 +745,10 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if strings.Contains(joined, "--ro-bind\x00/etc\x00/etc") || strings.Contains(joined, "--ro-bind\x00/opt\x00/opt") || strings.Contains(joined, "--ro-bind\x00/nix/store\x00/nix/store") {
 		t.Fatalf("broad system view remained in plan: %#v", plan.Bwrap)
 	}
-	for fd, destination := range map[string]string{"4": "/etc/passwd", "5": "/etc/group", "6": "/etc/nsswitch.conf", "7": "/etc/hosts"} {
-		if !strings.Contains(joined, "--perms\x000444\x00--ro-bind-data\x00"+fd+"\x00"+destination) {
-			t.Errorf("generated system file missing for %s: %#v", destination, plan.Bwrap)
+	for _, name := range []string{"passwd", "group", "nsswitch.conf", "hosts"} {
+		source := filepath.Join(filepath.Dir(plan.State), "generated", "etc", name)
+		if !strings.Contains(joined, "--ro-bind\x00"+source+"\x00/etc/"+name) {
+			t.Errorf("generated system file missing for %s: %#v", name, plan.Bwrap)
 		}
 	}
 	if !strings.Contains(joined, "--bind\x00/sys\x00/sys") {
@@ -756,8 +757,8 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if len(plan.ProtectedPaths) == 0 {
 		t.Fatal("write-through Podman plan omitted protected control paths")
 	}
-	if !strings.Contains(joined, "--perms\x000555\x00--ro-bind-data\x003\x00/run/bwrap-agent/init") || strings.Contains(joined, "--file") || len(plan.Launcher) != 9 || plan.Launcher[1] != internalLaunchMode || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfilePodman || plan.Launcher[8] != "--" {
-		t.Fatalf("fd-backed sandbox init is missing: %#v", plan.Bwrap)
+	if !strings.Contains(joined, "--ro-bind\x00"+filepath.Join(filepath.Dir(plan.State), "generated/executables/init")+"\x00/run/bwrap-agent/init") || strings.Contains(joined, "--file") || len(plan.Launcher) != 5 || plan.Launcher[1] != internalLaunchMode || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfilePodman || plan.Launcher[4] != "--" {
+		t.Fatalf("private sandbox init is missing: %#v", plan.Bwrap)
 	}
 	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "podman", "config", "containers.conf"))
 	if err != nil {
@@ -786,14 +787,14 @@ func TestPodmanPlanInjectsExternalCommandReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(plan.Bwrap, "\x00")
-	if !strings.Contains(joined, "--perms\x000555\x00--ro-bind-data\x008\x00/run/bwrap-agent/command") {
+	if !strings.Contains(joined, "--ro-bind\x00"+filepath.Join(filepath.Dir(plan.State), "generated/executables/command")+"\x00/run/bwrap-agent/command") {
 		t.Fatalf("external executable is not injected read-only: %#v", plan.Bwrap)
 	}
-	if !strings.Contains(joined, "--seccomp\x009") {
+	if !strings.Contains(joined, "--seccomp\x003") {
 		t.Fatalf("seccomp descriptor collided with external executable: %#v", plan.Bwrap)
 	}
-	if len(plan.Launcher) != 10 || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfilePodman || plan.Launcher[8] != executable || plan.Launcher[9] != "--" {
-		t.Fatalf("external executable descriptor source missing: %#v", plan.Launcher)
+	if len(plan.Launcher) != 5 || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfilePodman || plan.Launcher[4] != "--" {
+		t.Fatalf("unexpected launcher file arguments: %#v", plan.Launcher)
 	}
 }
 

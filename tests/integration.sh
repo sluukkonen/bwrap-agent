@@ -576,6 +576,30 @@ for runtime_case in default unset empty relative absolute; do
         '
 done
 
+# Podman must be able to overmount linked, read-only resolver files.
+for network in private none host; do
+    instance="integration-rootless-netns-$network"
+    generated="$BWRAP_AGENT_STATE_HOME/instances/$instance/generated"
+    "$binary" run --no-config --instance "$instance" --network "$network" --podman on --tty never \
+        --env "PRIVATE_FILES=$generated" /bin/sh -ec '
+            test ! -e "$PRIVATE_FILES"
+            original=$(cat /etc/resolv.conf)
+            for file in passwd group nsswitch.conf hosts resolv.conf; do
+                test "$(stat -c %h /etc/$file)" -gt 0
+                if (echo modified >>/etc/$file) 2>/dev/null; then
+                    echo "writable /etc/$file" >&2
+                    exit 1
+                fi
+            done
+            mkdir -p "$XDG_CONFIG_HOME/etc"
+            echo legacy-alias >"$XDG_CONFIG_HOME/etc/resolv.conf"
+            test "$(cat /etc/resolv.conf)" = "$original"
+            podman unshare --rootless-netns sh -ec "test -r /etc/resolv.conf"
+            echo rootless-netns-ok
+        '
+    test -f "$generated/etc/passwd"
+done
+
 if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     "$binary" \
         run \

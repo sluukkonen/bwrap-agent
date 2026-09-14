@@ -164,7 +164,7 @@ func mavenProxySettings(content []byte) ([]byte, error) {
 	return []byte(string(content[:closingStart]) + proxy + string(content[closingStart:])), nil
 }
 
-func prepareMavenConfig(context agentContext, network string, inherit bool) ([]injectedFile, error) {
+func prepareMavenConfig(context agentContext, generated, network string, inherit bool) ([]injectedFile, error) {
 	state := context.state
 	// This path can contain inherited host credentials. Never leave an old copy
 	// visible when inheritance is disabled, the host file disappears, or a
@@ -173,7 +173,7 @@ func prepareMavenConfig(context agentContext, network string, inherit bool) ([]i
 		return nil, fmt.Errorf("remove previous generated Maven settings: %w", err)
 	}
 	var source, securitySource string
-	var content []byte
+	var content, securityContent []byte
 	if inherit {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -184,7 +184,7 @@ func prepareMavenConfig(context agentContext, network string, inherit bool) ([]i
 			return nil, err
 		}
 		if source != "" {
-			securitySource, _, err = readHostMavenFile(context, filepath.Join(home, ".m2", "settings-security.xml"))
+			securitySource, securityContent, err = readHostMavenFile(context, filepath.Join(home, ".m2", "settings-security.xml"))
 			if err != nil {
 				return nil, err
 			}
@@ -217,7 +217,14 @@ func prepareMavenConfig(context agentContext, network string, inherit bool) ([]i
 		return nil, fmt.Errorf("parse Maven settings %s: %w", selected, err)
 	}
 	if network == "private" {
-		source, err = writeStateFile(state, "config/maven/settings.xml", privateSettings, 0o600)
+		content = privateSettings
+	}
+	source, err = writeStateFile(generated, "maven/settings.xml", content, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if securitySource != "" {
+		securitySource, err = writeStateFile(generated, "maven/settings-security.xml", securityContent, 0o600)
 		if err != nil {
 			return nil, err
 		}
@@ -276,9 +283,9 @@ func mavenFileMounts(state, source, name, placeholder string) ([]injectedFile, e
 	} else if err != nil {
 		return nil, err
 	}
-	files := []injectedFile{{Source: source, Destination: destination, Permissions: "0600"}}
+	files := []injectedFile{{Source: source, Destination: destination}}
 	if home, aliased := accountHome(state); aliased {
-		files = append(files, injectedFile{Source: source, Destination: filepath.Join(home, ".m2", name), Permissions: "0600"})
+		files = append(files, injectedFile{Source: source, Destination: filepath.Join(home, ".m2", name)})
 	}
 	return files, nil
 }

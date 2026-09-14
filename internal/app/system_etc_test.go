@@ -215,7 +215,7 @@ func TestSystemEtcCreatesParentForNestedSymlink(t *testing.T) {
 
 func TestGeneratedEtcIsMinimalAndNetworkSpecific(t *testing.T) {
 	state := t.TempDir()
-	files, err := prepareGeneratedEtc(state, "private", false, "agent-private-test")
+	files, err := prepareGeneratedEtc(state, t.TempDir(), "private", false, "agent-private-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestGeneratedEtcIsMinimalAndNetworkSpecific(t *testing.T) {
 		t.Fatalf("private hosts = %q", got)
 	}
 
-	hostFiles, err := prepareGeneratedEtc(t.TempDir(), "host", false, "agent-host-test")
+	hostFiles, err := prepareGeneratedEtc(t.TempDir(), t.TempDir(), "host", false, "agent-host-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestGeneratedEtcIsMinimalAndNetworkSpecific(t *testing.T) {
 	if !strings.Contains(string(hosts), "agent-host-test") {
 		t.Fatalf("host-mode hosts omitted sandbox hostname: %q", hosts)
 	}
-	noneFiles, err := prepareGeneratedEtc(t.TempDir(), "none", false, "agent-none-test")
+	noneFiles, err := prepareGeneratedEtc(t.TempDir(), t.TempDir(), "none", false, "agent-none-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestGeneratedEtcIsMinimalAndNetworkSpecific(t *testing.T) {
 	}
 
 	podmanState := t.TempDir()
-	podmanFiles, err := prepareGeneratedEtc(podmanState, "host", true, "agent-podman-test")
+	podmanFiles, err := prepareGeneratedEtc(podmanState, t.TempDir(), "host", true, "agent-podman-test")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,7 +40,7 @@ func TestMavenSettingsEncodings(t *testing.T) {
 				if _, err := writeStateFile(state, "home/.m2/settings.xml", original, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				files, err := prepareMavenConfig(agentContext{state: state}, "private", false)
+				files, err := prepareMavenConfig(agentContext{state: state}, t.TempDir(), "private", false)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -151,11 +151,11 @@ func TestPrepareMavenConfigPreservesOriginal(t *testing.T) {
 				}
 			}
 			for range 2 {
-				files, err := prepareMavenConfig(agentContext{state: state}, "private", false)
+				files, err := prepareMavenConfig(agentContext{state: state}, t.TempDir(), "private", false)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(files) != 1 || files[0].Permissions != "0600" {
+				if len(files) != 1 {
 					t.Fatalf("files = %#v", files)
 				}
 				got, err := os.ReadFile(files[0].Destination)
@@ -204,7 +204,7 @@ func TestPrepareMavenConfigRejectsUnsafePaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := prepareMavenConfig(agentContext{state: state}, "private", false); err == nil {
+			if _, err := prepareMavenConfig(agentContext{state: state}, t.TempDir(), "private", false); err == nil {
 				t.Fatal("unsafe path accepted")
 			}
 			entries, err := os.ReadDir(outside)
@@ -225,7 +225,7 @@ func TestMavenConfigLaunchModesAndHomeAlias(t *testing.T) {
 		}
 		joined := strings.Join(plan.Bwrap, "\x00")
 		if mode == "private" {
-			passwd, err := os.ReadFile(filepath.Join(plan.State, "config/etc/passwd"))
+			passwd, err := os.ReadFile(filepath.Join(filepath.Dir(plan.State), "generated/etc/passwd"))
 			if err != nil || !bytes.Contains(passwd, []byte("root:x:0:0:root:"+sandboxPasswdHome+":/bin/sh")) {
 				t.Fatalf("private pasta UID 0 home is not managed: %q, %v", passwd, err)
 			}

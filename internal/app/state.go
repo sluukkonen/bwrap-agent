@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -162,6 +164,10 @@ func unlinkStateFile(state, relative string) error {
 }
 
 func writeStateFile(state, relative string, content []byte, mode uint32) (string, error) {
+	return writeStateFileFrom(state, relative, bytes.NewReader(content), mode)
+}
+
+func writeStateFileFrom(state, relative string, content io.Reader, mode uint32) (string, error) {
 	if filepath.IsAbs(relative) || relative == "" {
 		return "", fmt.Errorf("state file must be a clean relative path: %s", relative)
 	}
@@ -185,14 +191,14 @@ func writeStateFile(state, relative string, content []byte, mode uint32) (string
 		return "", fmt.Errorf("could not safely write sandbox state file %s: %w", filepath.Join(state, relative), err)
 	}
 	created := true
+	file := os.NewFile(uintptr(fd), temporary)
 	defer func() {
-		unix.Close(fd)
+		file.Close()
 		if created {
 			_ = unix.Unlinkat(parentFD, temporary, 0)
 		}
 	}()
-	file := os.NewFile(uintptr(fd), temporary)
-	if _, err := file.Write(content); err != nil {
+	if _, err := io.Copy(file, content); err != nil {
 		return "", err
 	}
 	if err := unix.Fchmod(fd, mode); err != nil {
@@ -201,7 +207,6 @@ func writeStateFile(state, relative string, content []byte, mode uint32) (string
 	if err := file.Close(); err != nil {
 		return "", err
 	}
-	fd = -1
 	if err := unix.Renameat(parentFD, temporary, parentFD, name); err != nil {
 		return "", fmt.Errorf("could not safely write sandbox state file %s: %w", filepath.Join(state, relative), err)
 	}

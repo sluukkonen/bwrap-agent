@@ -130,6 +130,18 @@ run_fixture() {
         phase prepare /bin/sh -ec "$1"
         phase client /bin/sh -ec "$2"
     ' fixture "$prepare" "$execute"
+    if [ "$language" = go ]; then
+        "$binary" run --no-config --project "$project" \
+            --instance "integration-testcontainers-$language" --network private --podman on --tty never \
+            --env "BWRAP_AGENT_TEST_IMAGE=$BWRAP_AGENT_TEST_IMAGE" \
+            --env TESTCONTAINERS_RYUK_DISABLED=true /bin/sh -ec '
+                podman network create private-regression
+                trap "podman network rm private-regression" EXIT
+                podman run --rm --pull=never --network private-regression "$BWRAP_AGENT_TEST_IMAGE" /bin/true
+                ./fixture
+                echo testcontainers-go-private-ok
+            '
+    fi
 }
 
 for language in $languages; do

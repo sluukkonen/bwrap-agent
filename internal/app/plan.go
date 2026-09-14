@@ -400,30 +400,9 @@ func launchBubblewrap(argv []string) int {
 		return 126
 	}
 	sources, command := argv[:separator], argv[separator+1:]
-	self, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: locate sandbox init: %v\n", err)
+	if len(sources) != 0 {
+		fmt.Fprintln(os.Stderr, "bwrap-agent: internal Bubblewrap launcher received unexpected file sources")
 		return 126
-	}
-	self, err = filepath.EvalSymlinks(self)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: resolve sandbox init: %v\n", err)
-		return 126
-	}
-	paths := append([]string{self}, sources...)
-	files := make([]*os.File, 0, len(paths)+1)
-	defer func() {
-		for _, file := range files {
-			_ = file.Close()
-		}
-	}()
-	for _, path := range paths {
-		file, err := openInjectedFile(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "bwrap-agent: open injected source %s: %v\n", path, err)
-			return 126
-		}
-		files = append(files, file)
 	}
 	if seccompProfile != "" {
 		filter, err := openSeccompFilter(seccompProfile)
@@ -431,17 +410,15 @@ func launchBubblewrap(argv []string) int {
 			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare seccomp profile: %v\n", err)
 			return 126
 		}
-		files = append(files, filter)
-	}
-	for index, file := range files {
-		sourceFD, targetFD := int(file.Fd()), 3+index
-		if sourceFD == targetFD {
-			if _, err := unix.FcntlInt(uintptr(sourceFD), unix.F_SETFD, 0); err != nil {
-				fmt.Fprintf(os.Stderr, "bwrap-agent: preserve executable descriptor: %v\n", err)
-				return 126
-			}
-		} else if err := unix.Dup3(sourceFD, targetFD, 0); err != nil {
-			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare executable descriptor: %v\n", err)
+		defer filter.Close()
+		sourceFD := int(filter.Fd())
+		if sourceFD == 3 {
+			_, err = unix.FcntlInt(uintptr(sourceFD), unix.F_SETFD, 0)
+		} else {
+			err = unix.Dup3(sourceFD, 3, 0)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare seccomp descriptor: %v\n", err)
 			return 126
 		}
 	}
@@ -533,7 +510,16 @@ func BuildPlan(opts Options) (LaunchPlan, error) {
 	return buildPlan(opts, identity)
 }
 
-func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
+func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resultErr error) {
+	generated, err := preparePrivateFiles(identity)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, clearPrivateFiles(generated))
+		}
+	}()
 	project, instance, state := identity.Project, identity.Instance, identity.State
 	workspaceMode, err := resolveWorkspaceMode(opts.WorkspaceMode)
 	if err != nil {
@@ -605,7 +591,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	}
 	sandboxHostname := "agent-" + truncate(instance, 48)
 	_, passwdHomeAliased := accountHome(state)
-	generatedEtc, err := prepareGeneratedEtc(state, opts.Network, podmanBin != "", sandboxHostname)
+	generatedEtc, err := prepareGeneratedEtc(state, generated, opts.Network, podmanBin != "", sandboxHostname)
 	if err != nil {
 		return LaunchPlan{}, fmt.Errorf("prepare generated /etc: %w", err)
 	}
@@ -637,7 +623,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		state: state, project: project, gitCommon: identity.GitCommon,
 		rwBind: identity.RWBind, hostEnv: os.Environ(), config: !opts.NoAgentConfig,
 	}
-	mavenConfig, err := prepareMavenConfig(agentContext, opts.Network, !opts.NoMavenConfig)
+	mavenConfig, err := prepareMavenConfig(agentContext, generated, opts.Network, !opts.NoMavenConfig)
 	if err != nil {
 		return LaunchPlan{}, fmt.Errorf("prepare Maven configuration: %w", err)
 	}
@@ -784,7 +770,6 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		mounts.operation("--perms", "0700", "--tmpfs", sandboxRuntimeDirectory)
 		mounts.made[sandboxRuntimeDirectory] = true
 	}
-	var descriptorSources []string
 	if _, err := os.Stat("/dev/net/tun"); err == nil {
 		mounts.mount("--dev-bind", "/dev/net/tun", "/dev/net/tun")
 	}
@@ -810,10 +795,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		}
 	}
 	for _, file := range generatedEtc {
-		fd := 4 + len(descriptorSources)
-		descriptorSources = append(descriptorSources, file.Source)
-		mounts.parentDirs(file.Destination)
-		mounts.operation("--perms", file.Permissions, "--ro-bind-data", strconv.Itoa(fd), file.Destination)
+		mounts.mount("--ro-bind", file.Source, file.Destination)
 	}
 	for _, legacy := range []string{"/bin", "/sbin", "/lib", "/lib64"} {
 		info, err := os.Lstat(legacy)
@@ -900,8 +882,11 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	mounts.parentDirs("/run/bwrap-agent/init")
-	mounts.operation("--perms", "0555", "--ro-bind-data", "3", "/run/bwrap-agent/init")
+	initSource, err := copyPrivateExecutable(generated, "init", self)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	mounts.mount("--ro-bind", initSource, "/run/bwrap-agent/init")
 	for _, bind := range commandSetup.Mounts {
 		if bind.Executable && podmanBin != "" {
 			info, err := os.Stat(bind.Source)
@@ -909,21 +894,20 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 				return LaunchPlan{}, err
 			}
 			if info.Mode().IsRegular() {
-				fd := 4 + len(descriptorSources)
-				descriptorSources = append(descriptorSources, bind.Source)
-				mounts.parentDirs(bind.Destination)
-				mounts.operation("--perms", "0555", "--ro-bind-data", strconv.Itoa(fd), bind.Destination)
+				source, err := copyPrivateExecutable(generated, strings.TrimPrefix(bind.Destination, "/run/bwrap-agent/"), bind.Source)
+				if err != nil {
+					return LaunchPlan{}, err
+				}
+				mounts.mount("--ro-bind", source, bind.Destination)
 				continue
 			}
 		}
 		mounts.mount("--ro-bind", bind.Source, bind.Destination)
 	}
 	for _, file := range mavenConfig {
-		fd := 4 + len(descriptorSources)
-		descriptorSources = append(descriptorSources, file.Source)
-		mounts.parentDirs(file.Destination)
-		mounts.operation("--perms", file.Permissions, "--ro-bind-data", strconv.Itoa(fd), file.Destination)
+		mounts.mount("--ro-bind", file.Source, file.Destination)
 	}
+
 	names := make([]string, 0, len(environment))
 	for name := range environment {
 		names = append(names, name)
@@ -931,7 +915,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	sort.Strings(names)
 	bwrap = mounts.finish()
 	if seccompStatus.Effective == "enabled" {
-		bwrap = append(bwrap, "--seccomp", strconv.Itoa(4+len(descriptorSources)))
+		bwrap = append(bwrap, "--seccomp", "3")
 	}
 	for _, name := range names {
 		bwrap = append(bwrap, "--setenv", name, environment[name])
@@ -999,14 +983,14 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		// Fedora's SELinux policy leaves a user-home executable launched directly
 		// by pasta in pasta_t, which cannot traverse common state-home labels.
 		// A system executable trampoline restores the caller domain before this
-		// launcher reopens descriptor-backed inputs. Pass the launcher as the
+		// launcher runs Bubblewrap. Pass the launcher as the
 		// shell's quoted $0 so every valid path remains an opaque argument.
 		launcher = append([]string{launcherTrampoline, "-c", `exec "$0" "$@"`}, launcher...)
 	}
 	if seccompStatus.Effective == "enabled" {
 		launcher = append(launcher, "--seccomp-profile", seccompStatus.Profile)
 	}
-	launcher = append(append(launcher, descriptorSources...), "--")
+	launcher = append(launcher, "--")
 	return LaunchPlan{Clipboard: clipboardMode, clipboardBridge: clipboardConfig, Instance: instance, Project: project, State: state, WorkspaceMode: workspaceMode,
 		Landlock: landlockStatus, Seccomp: seccompStatus, Bubblewrap: bwrapInfo.BubblewrapStatus,
 		NetworkAllow: append([]string{}, opts.NetworkAllow...), ProxyGuestPort: proxyPort,

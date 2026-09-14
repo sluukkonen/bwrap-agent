@@ -76,7 +76,7 @@ func TestMavenHostSettingsLifecycle(t *testing.T) {
 				// Seed a previous host-derived copy, including when entering
 				// host/none mode. It must never survive the next preparation.
 				writeAgentTestFile(t, generated, "stale-host-secret")
-				files, err := prepareMavenConfig(context, mode, phase != "disabled")
+				files, err := prepareMavenConfig(context, t.TempDir(), mode, phase != "disabled")
 				if err != nil {
 					t.Fatalf("%s: %v", phase, err)
 				}
@@ -92,7 +92,8 @@ func TestMavenHostSettingsLifecycle(t *testing.T) {
 					t.Fatalf("%s: mounts = %#v", phase, files)
 				}
 				for _, file := range files {
-					if file.Permissions != "0600" {
+					info, err := os.Stat(file.Source)
+					if err != nil || info.Mode().Perm() != 0o600 {
 						t.Fatalf("unsafe permissions: %#v", file)
 					}
 					content, err := os.ReadFile(file.Source)
@@ -184,7 +185,7 @@ func TestMavenHostSourceSafety(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				_, err := prepareMavenConfig(context, "private", true)
+				_, err := prepareMavenConfig(context, t.TempDir(), "private", true)
 				if (err != nil) != (scenario != "regular" && scenario != "symlink") {
 					t.Fatalf("source %s: %v", source, err)
 				}
@@ -201,16 +202,16 @@ func TestMavenHostSelectionBeforeParsing(t *testing.T) {
 	original := filepath.Join(context.state, "home/.m2/settings.xml")
 	writeAgentTestFile(t, host, "<settings/>")
 	writeAgentTestFile(t, original, "invalid instance XML")
-	if _, err := prepareMavenConfig(context, "private", true); err != nil {
+	if _, err := prepareMavenConfig(context, t.TempDir(), "private", true); err != nil {
 		t.Fatal(err)
 	}
 	writeAgentTestFile(t, original, "<settings/>")
 	writeAgentTestFile(t, host, "invalid host XML")
 	for _, mode := range []string{"private", "host", "none"} {
-		if _, err := prepareMavenConfig(context, mode, true); err == nil {
+		if _, err := prepareMavenConfig(context, t.TempDir(), mode, true); err == nil {
 			t.Fatalf("%s silently ignored invalid host XML", mode)
 		}
-		if _, err := prepareMavenConfig(context, mode, false); err != nil {
+		if _, err := prepareMavenConfig(context, t.TempDir(), mode, false); err != nil {
 			t.Fatal(err)
 		}
 	}

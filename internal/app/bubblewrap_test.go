@@ -42,9 +42,9 @@ func TestInspectBubblewrapRejectsOldAndSetuid(t *testing.T) {
 	if err := validateBubblewrapFileMode("/usr/bin/bwrap", os.ModeSetuid|0o755); err == nil || !strings.Contains(err.Error(), "setuid") {
 		t.Fatalf("setuid Bubblewrap error = %v", err)
 	}
-	missingReadOnlyData := fakeBubblewrapWithHelp(t, "0.12.0", 0o755, "--overlay-src --tmp-overlay --remount-ro --disable-userns --file --perms")
-	if _, err := inspectBubblewrap(missingReadOnlyData); err == nil || !strings.Contains(err.Error(), "lacks required option --ro-bind-data") {
-		t.Fatalf("missing --ro-bind-data error = %v", err)
+	withoutReadOnlyData := fakeBubblewrapWithHelp(t, "0.12.0", 0o755, "--overlay-src --tmp-overlay --remount-ro --disable-userns --perms --seccomp")
+	if _, err := inspectBubblewrap(withoutReadOnlyData); err != nil {
+		t.Fatalf("unneeded --ro-bind-data capability required: %v", err)
 	}
 	missingSeccomp := fakeBubblewrapWithHelp(t, "0.12.0", 0o755, "--overlay-src --tmp-overlay --remount-ro --disable-userns --ro-bind-data --perms")
 	if _, err := inspectBubblewrap(missingSeccomp); err == nil || !strings.Contains(err.Error(), "lacks required option --seccomp") {

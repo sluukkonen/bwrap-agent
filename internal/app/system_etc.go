@@ -13,7 +13,6 @@ import (
 type injectedFile struct {
 	Source      string
 	Destination string
-	Permissions string
 }
 
 type generatedEtcFile struct {
@@ -178,7 +177,7 @@ func generatedHosts(hostsPath, network, hostname string) ([]byte, error) {
 	return append(content, []byte(fmt.Sprintf("127.0.0.1 %s\n::1 %s\n", hostname, hostname))...), nil
 }
 
-func prepareGeneratedEtc(state, network string, podmanEnabled bool, hostname string) ([]injectedFile, error) {
+func prepareGeneratedEtc(state, generated, network string, podmanEnabled bool, hostname string) ([]injectedFile, error) {
 	passwd, group := generatedAccountFiles(state, podmanEnabled || network == "private")
 	hosts, err := generatedHosts("/etc/hosts", network, hostname)
 	if err != nil {
@@ -199,11 +198,11 @@ func prepareGeneratedEtc(state, network string, podmanEnabled bool, hostname str
 	}
 	result := make([]injectedFile, 0, len(files))
 	for _, file := range files {
-		source, err := writeStateFile(state, filepath.Join("config", "etc", file.name), file.content, 0o600)
+		source, err := writeStateFile(generated, filepath.Join("etc", file.name), file.content, 0o444)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, injectedFile{Source: source, Destination: filepath.Join("/etc", file.name), Permissions: "0444"})
+		result = append(result, injectedFile{Source: source, Destination: filepath.Join("/etc", file.name)})
 	}
 	return result, nil
 }
