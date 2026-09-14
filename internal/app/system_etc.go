@@ -34,6 +34,7 @@ var portableEtcPaths = []string{
 	"ld-musl-aarch64.path",
 	"java",
 	"m2.conf",
+	"m24.conf",
 	"maven/m2.conf",
 	"maven/settings.xml",
 	"maven/toolchains.xml",
