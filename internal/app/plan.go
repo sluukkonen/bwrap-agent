@@ -560,7 +560,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if err := secureMkdir(state, 0o700); err != nil {
 		return LaunchPlan{}, err
 	}
-	for _, child := range []string{"home", "run", "tmp", "podman"} {
+	for _, child := range []string{"home", "tmp", "podman"} {
 		if _, err := ensureStateDirectory(state, child, 0o700); err != nil {
 			return LaunchPlan{}, err
 		}
@@ -736,6 +736,9 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		delete(environment, "CONTAINERS_CONF")
 		environment["CONTAINERS_CONF_OVERRIDE"] = containersConfig
 		environment["CONTAINERS_STORAGE_CONF"] = storageConfig
+		// podman unshare exports its store paths; these are bootstrap-only.
+		delete(environment, "CONTAINERS_GRAPHROOT")
+		delete(environment, "CONTAINERS_RUNROOT")
 	}
 	// Never accept a policy payload from configuration or the host environment.
 	// Enabled Landlock replaces it below with a launcher-generated allowlist;
@@ -773,6 +776,10 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	}
 	bwrap = append(bwrap, "--tmpfs", "/", "--dir", "/var", "--dir", "/run", "--proc", "/proc", "--dev", "/dev", "--dir", "/dev/net", "--tmpfs", "/tmp", "--tmpfs", "/var/tmp", "--dir", "/run/bwrap-agent")
 	mounts := mountBuilder{args: bwrap, made: map[string]bool{"/dev": true, "/dev/net": true, "/tmp": true, "/var": true, "/var/tmp": true, "/run": true, "/run/bwrap-agent": true}}
+	if podmanBin != "" {
+		mounts.operation("--perms", "0700", "--tmpfs", sandboxRuntimeDirectory)
+		mounts.made[sandboxRuntimeDirectory] = true
+	}
 	var descriptorSources []string
 	if _, err := os.Stat("/dev/net/tun"); err == nil {
 		mounts.mount("--dev-bind", "/dev/net/tun", "/dev/net/tun")
@@ -929,7 +936,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	if podmanBin != "" {
 		// The supervisor uses only our generated configuration. Its CONTAINERS_CONF
 		// must not suppress user configuration in the sandbox.
-		bwrap = append(bwrap, "--unsetenv", "CONTAINERS_CONF")
+		bwrap = append(bwrap, "--unsetenv", "CONTAINERS_CONF", "--unsetenv", "CONTAINERS_GRAPHROOT", "--unsetenv", "CONTAINERS_RUNROOT")
 	}
 	initMode := internalInitMode
 	if podmanBin != "" {
@@ -967,14 +974,11 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	// namespace. Sandbox overrides must not change the invoking account.
 	if podmanBin != "" {
 		launchEnv["USER"], launchEnv["LOGNAME"] = hostAccount, hostAccount
-	}
-	// The outer podman-unshare process needs a host-visible runtime directory;
-	// bubblewrap sets the shorter private value encoded in its own argv.
-	launchEnv["XDG_RUNTIME_DIR"] = filepath.Join(state, "run")
-	if storageConfig != "" {
-		launchEnv["CONTAINERS_CONF"] = containersConfig
-		// Do not load the same file twice and append duplicate pasta options.
-		delete(launchEnv, "CONTAINERS_CONF_OVERRIDE")
+		launchEnv["PATH"] = os.Getenv("PATH")
+		launchEnv = podmanBootstrapEnvironment(launchEnv, podmanBootstrapPlaceholder)
+	} else {
+		// Only the sandbox needs this private path; pasta runs on the host.
+		delete(launchEnv, "XDG_RUNTIME_DIR")
 	}
 	proxyPort := 0
 	if opts.Network == "private" {

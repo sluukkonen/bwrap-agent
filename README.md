@@ -50,6 +50,8 @@ The sandbox builds `/etc` from a small runtime allowlist instead of exposing the
 
 By default, the instance uses a readable name derived from the project directory (for example, `bwrap-agent`). Returning to the same canonical project reuses its sandbox home, agent credentials, dependency caches, images, containers, and volumes. If that readable name already belongs to another project, a short hash of the canonical path is appended. Different worktree directory names therefore normally receive distinct instances automatically.
 
+Podman runtime files live in sandbox tmpfs and start fresh on every invocation. The outer namespace bootstrap uses a separate disposable store, so no host runtime-directory setup is required. Existing instances created with persistent `state/run` paths may need manual replacement or repair because Podman records runtime paths in its database; this change does not migrate or reset them automatically.
+
 Set `instance = "feature-payments"` in the project configuration to persist a different name, or use `--instance` for a command-line override. Instance names are project-only configuration: a fixed name in the user-wide file would collide across projects. An explicit or configured name is permanently associated with one canonical project:
 
 ```console

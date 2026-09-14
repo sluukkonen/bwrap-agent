@@ -242,7 +242,7 @@ func parseExitCode(err error) int {
 	return 2
 }
 
-func Main(args []string) int {
+func Main(args []string) (status int) {
 	if len(args) > 0 && args[0] == internalInitMode {
 		return sandboxInit(args[1:], false)
 	}
@@ -338,6 +338,22 @@ func Main(args []string) int {
 		}
 		return 0
 	}
+	if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] == "1" {
+		root, launchEnv, err := createPodmanBootstrap(plan.LaunchEnv, identity)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
+			return 126
+		}
+		defer func() {
+			if err := removePodmanBootstrap(root); err != nil {
+				fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
+				if status == 0 {
+					status = 126
+				}
+			}
+		}()
+		plan.LaunchEnv = launchEnv
+	}
 	argv := plan.Argv()
 	var proxy *networkProxy
 	if plan.ProxyGuestPort != 0 {
@@ -370,21 +386,11 @@ func Main(args []string) int {
 	for _, port := range plan.Ports {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: %s 127.0.0.1:%d -> sandbox 127.0.0.1:%d\n", port.Protocol, port.Host, port.Guest)
 	}
-	status := 0
 	if plan.TTY {
 		signal.Notify(launchSignals, syscall.SIGWINCH)
 		status = runWithPTYClipboard(argv, plan.LaunchEnv, os.Stdin, os.Stdout, launchSignals, plan.clipboardBridge)
 	} else {
 		status = runDirectSignals(argv, plan.LaunchEnv, os.Stdin, os.Stdout, os.Stderr, launchSignals)
 	}
-	var pauseErr error
-	if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] == "1" {
-		pauseErr = stopVerifiedPodmanPauseProcess(identity.Root, identity.Root)
-	}
-	if pauseErr != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: clean up Podman pause process: %v\n", pauseErr)
-		return 126
-	}
-
 	return status
 }

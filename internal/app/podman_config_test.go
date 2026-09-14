@@ -118,7 +118,7 @@ func TestPodmanConfigPlan(t *testing.T) {
 			}
 			generated := filepath.Join(plan.State, "podman", "config", "containers.conf")
 			storage := filepath.Join(plan.State, "podman", "config", "storage.conf")
-			if plan.LaunchEnv["CONTAINERS_CONF"] != generated || plan.LaunchEnv["CONTAINERS_STORAGE_CONF"] != storage {
+			if plan.LaunchEnv["CONTAINERS_CONF"] != filepath.Join(podmanBootstrapPlaceholder, "containers.conf") || plan.LaunchEnv["CONTAINERS_STORAGE_CONF"] != filepath.Join(podmanBootstrapPlaceholder, "storage.conf") {
 				t.Fatalf("supervisor config not isolated: %#v", plan.LaunchEnv)
 			}
 			if _, exists := plan.LaunchEnv["CONTAINERS_CONF_OVERRIDE"]; exists {
@@ -167,8 +167,8 @@ func TestPodmanConfigPlan(t *testing.T) {
 			if engine["static_dir"] != "" || engine["volume_path"] != "" || netConfig["network_config_dir"] != "" {
 				t.Fatalf("host paths are not reset to store-derived defaults: %s", data)
 			}
-			if !pathWithin(plan.State, engine["tmp_dir"].(string)) {
-				t.Fatalf("temporary directory escapes instance: %s", data)
+			if engine["tmp_dir"] != filepath.Join(sandboxRuntimeDirectory, "libpod/tmp") {
+				t.Fatalf("temporary directory is not sandbox-private: %s", data)
 			}
 		})
 	}

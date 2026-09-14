@@ -12,7 +12,7 @@ case "$port_server" in
     /*) ;;
     *) port_server="$PWD/${port_server#./}" ;;
 esac
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 fixture_root="$script_dir/fixtures"
 test_root=$(mktemp -d /tmp/bwrap-agent-integration.XXXXXX)
 background_pids=
@@ -723,3 +723,4 @@ fi
 sh "$script_dir/git-config.sh" "$binary" "$test_root"
 
 sh "$script_dir/podman-config.sh" "$binary" "$test_root"
+sh "$script_dir/podman-runtime.sh" "$binary" "$test_root"

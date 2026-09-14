@@ -19,10 +19,7 @@ func writeStorageConfig(state string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	runRoot, err := ensureStateDirectory(state, "run/containers", 0o700)
-	if err != nil {
-		return "", err
-	}
+	runRoot := filepath.Join(sandboxRuntimeDirectory, "containers")
 	graphJSON, _ := json.Marshal(graphRoot)
 	runJSON, _ := json.Marshal(runRoot)
 	content := fmt.Sprintf("[storage]\ndriver = \"overlay\"\ngraphroot = %s\nrunroot = %s\n\n[storage.options.overlay]\nignore_chown_errors = \"false\"\n", graphJSON, runJSON)
@@ -63,11 +60,7 @@ func writeContainersConfig(state string, privateNetwork, disableLabeling bool) (
 		"remote": false, "active_service": "",
 		"static_dir": "", "volume_path": "",
 	}
-	tmp, err := ensureStateDirectory(state, "run/libpod/tmp", 0o700)
-	if err != nil {
-		return "", err
-	}
-	engine["tmp_dir"] = tmp
+	engine["tmp_dir"] = filepath.Join(sandboxRuntimeDirectory, "libpod/tmp")
 	network := map[string]any{"network_config_dir": ""}
 	containers := map[string]any{}
 	if disableLabeling {

@@ -717,7 +717,7 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if _, exists := plan.LaunchEnv["BWRAP_AGENT_PODMAN_SOCKET"]; exists {
 		t.Fatalf("obsolete socket mode leaked into plan: %#v", plan.LaunchEnv)
 	}
-	if plan.LaunchEnv["XDG_RUNTIME_DIR"] != filepath.Join(plan.State, "run") {
+	if plan.LaunchEnv["XDG_RUNTIME_DIR"] != filepath.Join(podmanBootstrapPlaceholder, "run") {
 		t.Fatalf("outer runtime directory = %q", plan.LaunchEnv["XDG_RUNTIME_DIR"])
 	}
 	if plan.LaunchEnv["PODMAN_NO_PAUSE_PROCESS"] != "1" {
@@ -1034,8 +1034,11 @@ func TestSandboxUnsetsOuterEnvironment(t *testing.T) {
 						t.Errorf("sandbox must unset %s", key)
 					}
 				}
-				if plan.LaunchEnv["XDG_RUNTIME_DIR"] != filepath.Join(plan.State, "run") {
-					t.Fatal("outer runtime directory lost")
+				if podman == "on" && plan.LaunchEnv["XDG_RUNTIME_DIR"] != filepath.Join(podmanBootstrapPlaceholder, "run") {
+					t.Fatal("outer bootstrap runtime directory lost")
+				}
+				if podman == "off" && plan.LaunchEnv["XDG_RUNTIME_DIR"] != "" {
+					t.Fatal("disabled Podman should not require a host runtime directory")
 				}
 				if strings.Contains(joined, "--unsetenv\x00BWRAP_AGENT_PODMAN\x00") {
 					t.Fatal("launcher-owned status was unset")
