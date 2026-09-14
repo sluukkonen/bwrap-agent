@@ -65,6 +65,20 @@ func TestNetworkOriginNormalizationAndMatching(t *testing.T) {
 			t.Errorf("expected policy to deny %#v", denied)
 		}
 	}
+	for _, host := range []string{"example.com", "sub.example.com", "deep.sub.example.com", "anything.invalid"} {
+		if !policy.allowsHostname(host) {
+			t.Errorf("expected policy to allow DNS for %q", host)
+		}
+	}
+	restricted, err := parseNetworkPolicy([]string{"https://example.com", "https://*.example.com:8443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"other.example.net", "notexample.com"} {
+		if restricted.allowsHostname(host) {
+			t.Errorf("expected restricted policy to deny DNS for %q", host)
+		}
+	}
 }
 
 func TestNetworkOriginValidation(t *testing.T) {
@@ -79,13 +93,45 @@ func TestNetworkOriginValidation(t *testing.T) {
 	}
 }
 
-func TestEmptyNetworkPolicyDeniesHTTPOrigins(t *testing.T) {
+func TestEmptyNetworkPolicyDeniesEverything(t *testing.T) {
 	policy, err := parseNetworkPolicy(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.allows("https", "example.com", 443) || policy.allows("http", "example.com", 80) {
+	if policy.allows("https", "example.com", 443) || policy.allows("http", "example.com", 80) || policy.allowsHostname("example.com") {
 		t.Fatal("empty policy allowed a destination")
+	}
+}
+
+func TestNetworkPolicyHostnameMatching(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		origins []string
+		host    string
+		allowed bool
+	}{
+		{"empty", nil, "example.com", false},
+		{"exact", []string{"https://example.com:8443"}, "example.com", true},
+		{"normalized", []string{"https://Example.COM."}, "EXAMPLE.com.", true},
+		{"http", []string{"http://example.com:8080"}, "example.com", true},
+		{"exact excludes children", []string{"https://example.com"}, "sub.example.com", false},
+		{"wildcard child", []string{"https://*.example.com"}, "sub.example.com", true},
+		{"wildcard descendant", []string{"https://*.example.com"}, "deep.sub.example.com", true},
+		{"wildcard normalized", []string{"https://*.example.com"}, "SUB.EXAMPLE.COM.", true},
+		{"wildcard excludes apex", []string{"https://*.example.com"}, "example.com", false},
+		{"misleading suffix", []string{"https://*.example.com"}, "notexample.com", false},
+		{"misleading prefix", []string{"https://*.example.com"}, "example.com.evil.test", false},
+		{"full wildcard", []string{"http://*"}, "unlisted.example", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			policy, err := parseNetworkPolicy(test.origins)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := policy.allowsHostname(test.host); got != test.allowed {
+				t.Fatalf("allowsHostname(%q) = %t, want %t", test.host, got, test.allowed)
+			}
+		})
 	}
 }
 

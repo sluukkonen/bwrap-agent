@@ -171,12 +171,34 @@ printf 'equals-launcher-ok\n'
         grep -q "nameserver 127.0.0.1" /etc/resolv.conf
         getent hosts localhost >/dev/null
         getent hosts "$(hostname)" >/dev/null
-        getent ahosts example.com >/dev/null
+        if getent ahosts example.com >/dev/null; then
+            echo "empty allowlist permitted external DNS" >&2
+            exit 1
+        fi
         status=$(curl --silent --show-error --max-time 5 --output /dev/null --write-out "%{http_code}" http://example.com)
         test "$status" = 403
         test ! -e /etc/shadow
         test ! -e /etc/machine-id
-        printf "private-ok\n"
+        printf "private-empty-allowlist-ok\n"
+    '
+
+"$binary" \
+    run \
+    --instance integration-private-allowlisted \
+    --no-config \
+    --podman off \
+    --network private \
+    --network-allow https://example.com \
+    --tty never \
+    /bin/sh -ec '
+        getent hosts localhost >/dev/null
+        getent hosts "$(hostname)" >/dev/null
+        getent ahosts example.com >/dev/null
+        if getent ahosts example.org >/dev/null; then
+            echo "unlisted hostname resolved" >&2
+            exit 1
+        fi
+        printf "private-allowlisted-dns-ok\n"
     '
 
 private_port_one="$test_root/private-port-one"

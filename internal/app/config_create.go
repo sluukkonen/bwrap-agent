@@ -55,10 +55,10 @@ const commonConfigTemplate = `# Expose detected host agent configuration read-on
 # network = "private"
 
 # HTTP/HTTPS origins reachable in private mode. An empty combined list denies
-# outbound HTTP/HTTPS access; DNS A/AAAA lookups remain available for any name.
-# Exact hosts, leading *. wildcards, and a full * wildcard
+# all outside access. Exact hosts, leading *. wildcards, and a full * wildcard
 # are accepted. A missing port means 80 for HTTP or 443 for HTTPS. Arrays from
 # configuration layers and the CLI are combined and deduplicated.
+# DNS A/AAAA lookups require a matching hostname, regardless of scheme or port.
 # network_allow = ["https://registry.example.com", "https://*.example.com"]
 
 # Publish private-network ports on host loopback. Entries use

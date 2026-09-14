@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -205,12 +206,16 @@ func dnsQuery(name string, recordType uint16) []byte {
 }
 
 func TestPrivateDNSProxyFiltersQueriesAndAnswers(t *testing.T) {
+	policy, err := parseNetworkPolicy([]string{"https://allowed.example", "http://*.wild.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var lookedUp []string
 	lookup := func(_ context.Context, network, host string) ([]netip.Addr, error) {
 		lookedUp = append(lookedUp, network+" "+host)
 		return []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("203.0.113.8")}, nil
 	}
-	proxy := &dnsProxy{lookup: lookup}
+	proxy := &dnsProxy{policy: policy, lookup: lookup}
 
 	response := proxy.response(dnsQuery("Allowed.Example", 1), 512)
 	if id := binary.BigEndian.Uint16(response[:2]); id != 0x1234 {
@@ -229,22 +234,26 @@ func TestPrivateDNSProxyFiltersQueriesAndAnswers(t *testing.T) {
 		t.Fatalf("DNS lookups = %#v", lookedUp)
 	}
 
-	unlisted := proxy.response(dnsQuery("unlisted.example", 1), 512)
-	if code := binary.BigEndian.Uint16(unlisted[2:4]) & 0x000f; code != 0 || len(lookedUp) != 2 || lookedUp[1] != "ip unlisted.example." {
-		t.Fatalf("unlisted DNS response code = %d, lookups = %#v", code, lookedUp)
+	denied := proxy.response(dnsQuery("denied.example", 1), 512)
+	if code := binary.BigEndian.Uint16(denied[2:4]) & 0x000f; code != 5 || len(lookedUp) != 1 {
+		t.Fatalf("denied DNS response code = %d, lookups = %#v", code, lookedUp)
 	}
 	unsupported := proxy.response(dnsQuery("child.wild.example", 16), 512)
-	if code := binary.BigEndian.Uint16(unsupported[2:4]) & 0x000f; code != 4 || len(lookedUp) != 2 {
+	if code := binary.BigEndian.Uint16(unsupported[2:4]) & 0x000f; code != 4 || len(lookedUp) != 1 {
 		t.Fatalf("unsupported DNS response code = %d, lookups = %#v", code, lookedUp)
 	}
 }
 
 func TestPrivateDNSProxyPreservesAbsoluteQuestion(t *testing.T) {
+	policy, err := parseNetworkPolicy([]string{"https://*"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"Example.COM", "registry", "203.0.113.8"} {
 		for _, kind := range []uint16{1, 28} {
 			t.Run(fmt.Sprintf("%s/%d", name, kind), func(t *testing.T) {
 				var lookedUp string
-				proxy := &dnsProxy{lookup: func(_ context.Context, _, host string) ([]netip.Addr, error) {
+				proxy := &dnsProxy{policy: policy, lookup: func(_ context.Context, _, host string) ([]netip.Addr, error) {
 					lookedUp = host
 					return nil, nil
 				}}
@@ -276,10 +285,14 @@ func TestProxyLookupName(t *testing.T) {
 }
 
 func TestPrivateDNSProxyServesUDPAndTCP(t *testing.T) {
+	policy, err := parseNetworkPolicy([]string{"https://allowed.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	lookup := func(_ context.Context, network, host string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("2001:db8::8")}, nil
 	}
-	proxy, err := startDNSProxy(lookup)
+	proxy, err := startDNSProxy(policy, lookup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +335,79 @@ func TestPrivateDNSProxyServesUDPAndTCP(t *testing.T) {
 	}
 }
 
+func TestPrivateDNSProxyRefusesWithoutUpstreamLookup(t *testing.T) {
+	for _, origins := range [][]string{nil, {"https://allowed.example"}} {
+		for _, transport := range []string{"udp4", "tcp4"} {
+			t.Run(fmt.Sprintf("%v/%s", origins, transport), func(t *testing.T) {
+				policy, err := parseNetworkPolicy(origins)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var lookups atomic.Int32
+				proxy, err := startDNSProxy(policy, func(context.Context, string, string) ([]netip.Addr, error) {
+					lookups.Add(1)
+					return []netip.Addr{netip.MustParseAddr("203.0.113.8")}, nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer proxy.Close()
+				connection, err := net.Dial(transport, proxy.tcp.Addr().String())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer connection.Close()
+				if err := connection.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				// Policy rejection precedes both address lookup and record support checks.
+				for _, kind := range []uint16{1, 28, 16} {
+					query := dnsQuery("unlisted.example", kind)
+					request := query
+					if transport == "tcp4" {
+						request = append(binary.BigEndian.AppendUint16(nil, uint16(len(query))), query...)
+					}
+					if _, err := connection.Write(request); err != nil {
+						t.Fatal(err)
+					}
+					var response []byte
+					if transport == "tcp4" {
+						var size [2]byte
+						if _, err := io.ReadFull(connection, size[:]); err != nil {
+							t.Fatal(err)
+						}
+						response = make([]byte, binary.BigEndian.Uint16(size[:]))
+						if _, err := io.ReadFull(connection, response); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						response = make([]byte, 512)
+						n, err := connection.Read(response)
+						if err != nil {
+							t.Fatal(err)
+						}
+						response = response[:n]
+					}
+					if len(response) < 12 || binary.BigEndian.Uint16(response[2:4])&15 != 5 || binary.BigEndian.Uint16(response[6:8]) != 0 {
+						t.Fatalf("type %d: expected REFUSED with no answers, got %x", kind, response)
+					}
+					if !bytes.Equal(response[12:], query[12:]) {
+						t.Fatal("refusal changed the question")
+					}
+					if got := lookups.Load(); got != 0 {
+						t.Fatalf("refused query reached upstream resolver: %d lookups", got)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestPrivateDNSProxyMissingAddressFamily(t *testing.T) {
+	policy, err := parseNetworkPolicy([]string{"https://allowed.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, family := range []struct {
 		name            string
 		address         string
@@ -332,7 +417,7 @@ func TestPrivateDNSProxyMissingAddressFamily(t *testing.T) {
 		{"IPv6 only", "2001:db8::8", 28, 1},
 	} {
 		t.Run(family.name, func(t *testing.T) {
-			proxy := &dnsProxy{lookup: func(_ context.Context, network, host string) ([]netip.Addr, error) {
+			proxy := &dnsProxy{policy: policy, lookup: func(_ context.Context, network, host string) ([]netip.Addr, error) {
 				if network != "ip" {
 					return nil, &net.DNSError{IsNotFound: true}
 				}
@@ -359,7 +444,7 @@ func TestPrivateDNSProxyMissingAddressFamily(t *testing.T) {
 		{"canceled", context.Canceled, 2},
 	} {
 		t.Run(failure.name, func(t *testing.T) {
-			proxy := &dnsProxy{lookup: func(context.Context, string, string) ([]netip.Addr, error) { return nil, failure.err }}
+			proxy := &dnsProxy{policy: policy, lookup: func(context.Context, string, string) ([]netip.Addr, error) { return nil, failure.err }}
 			response := proxy.response(dnsQuery("allowed.example", 1), 512)
 			if code := binary.BigEndian.Uint16(response[2:4]) & 15; code != failure.code || binary.BigEndian.Uint16(response[6:8]) != 0 {
 				t.Fatalf("rcode = %d, want %d and zero answers", code, failure.code)
@@ -431,7 +516,11 @@ func TestDNSListenerStopsOnPermanentErrorOrRetryLimit(t *testing.T) {
 }
 
 func TestPrivateDNSProxyReusesTCPConnection(t *testing.T) {
-	proxy, err := startDNSProxy(func(context.Context, string, string) ([]netip.Addr, error) {
+	policy, err := parseNetworkPolicy([]string{"https://allowed.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := startDNSProxy(policy, func(context.Context, string, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("203.0.113.8"), netip.MustParseAddr("2001:db8::8")}, nil
 	})
 	if err != nil {
@@ -484,7 +573,7 @@ func TestPrivateDNSProxyReusesTCPConnection(t *testing.T) {
 }
 
 func TestPrivateDNSProxyCloseClosesIdleTCPClients(t *testing.T) {
-	proxy, err := startDNSProxy(func(context.Context, string, string) ([]netip.Addr, error) {
+	proxy, err := startDNSProxy(networkPolicy{}, func(context.Context, string, string) ([]netip.Addr, error) {
 		return nil, nil
 	})
 	if err != nil {
