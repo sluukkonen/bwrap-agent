@@ -705,6 +705,8 @@ func TestEnabledPodmanPlan(t *testing.T) {
 		Project: ".", Instance: "podman-plan", Network: "host", Podman: "on", Seccomp: "required", TTY: "never", Command: []string{"/bin/true"},
 		UnsetEnv: []string{"BWRAP_AGENT_PODMAN"},
 	}
+	base.Project = t.TempDir()
+	writeTestFile(t, filepath.Join(base.Project, "opencode.json"), "{}")
 	plan, err := BuildPlan(base)
 	if err != nil {
 		t.Fatal(err)

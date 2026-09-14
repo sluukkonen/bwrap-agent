@@ -195,7 +195,7 @@ func stateRegularFileExists(state, relative string) (bool, error) {
 		return false, err
 	}
 	defer unix.Close(parentFD)
-	fd, err := unix.Openat(parentFD, parts[len(parts)-1], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(parentFD, parts[len(parts)-1], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if errors.Is(err, unix.ENOENT) {
 		return false, nil
 	}

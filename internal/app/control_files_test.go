@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
 func controlTestOptions(project, instance string) Options {
@@ -18,77 +16,43 @@ func controlTestOptions(project, instance string) Options {
 	}
 }
 
-func TestWorkspaceProtectsMissingControlPathsWithReadOnlyMasks(t *testing.T) {
+func TestWorkspaceLeavesMissingControlPathsAbsent(t *testing.T) {
 	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	project := t.TempDir()
-	plan, err := BuildPlan(controlTestOptions(project, "protected-missing"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{
-		filepath.Join(project, projectConfigName),
-		filepath.Join(project, "opencode.json"),
-		filepath.Join(project, "opencode.jsonc"),
-		filepath.Join(project, ".opencode"),
-		filepath.Join(project, ".pi"),
-	}
-	joined := strings.Join(plan.ProtectedPaths, "\x00")
-	bwrap := strings.Join(plan.Bwrap, "\x00")
-	for _, path := range want {
-		if !strings.Contains(joined, path) {
-			t.Errorf("protected paths omit %s: %#v", path, plan.ProtectedPaths)
+	for _, existingOpenCode := range []bool{false, true} {
+		project := t.TempDir()
+		if existingOpenCode {
+			if err := os.Mkdir(filepath.Join(project, ".opencode"), 0o700); err != nil {
+				t.Fatal(err)
+			}
 		}
-		if !strings.Contains(bwrap, "--ro-bind\x00") || !strings.Contains(bwrap, "\x00"+path) {
-			t.Errorf("bwrap plan does not mask %s: %#v", path, plan.Bwrap)
+		plan, err := BuildPlan(controlTestOptions(project, "missing-"+filepath.Base(project)))
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if strings.Contains(joined, ".mcp.json") {
-		t.Fatalf("Claude-specific .mcp.json was protected: %#v", plan.ProtectedPaths)
-	}
-	gitignore := filepath.Join(project, ".opencode", ".gitignore")
-	gitignoreSource := filepath.Join(filepath.Dir(plan.State), "control-masks", "opencode", ".gitignore")
-	if !strings.Contains(bwrap, "--bind\x00"+gitignoreSource+"\x00"+gitignore) {
-		t.Fatalf("bwrap plan does not provide writable OpenCode housekeeping file: %#v", plan.Bwrap)
-	}
-	var output bytes.Buffer
-	if err := writePlanJSON(&output, plan); err != nil {
-		t.Fatal(err)
-	}
-	var dryRun struct {
-		ProtectedPaths []string `json:"protected_paths"`
-	}
-	if err := json.Unmarshal(output.Bytes(), &dryRun); err != nil {
-		t.Fatal(err)
-	}
-	if len(dryRun.ProtectedPaths) != len(plan.ProtectedPaths) {
-		t.Fatalf("dry-run protected paths = %#v, want %#v", dryRun.ProtectedPaths, plan.ProtectedPaths)
-	}
-}
-
-func TestOpenCodeGitignoreUsesDisposableWritableMount(t *testing.T) {
-	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	project := t.TempDir()
-	if err := os.Mkdir(filepath.Join(project, ".opencode"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	plan, err := BuildPlan(controlTestOptions(project, "opencode-gitignore"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	destination := filepath.Join(project, ".opencode", ".gitignore")
-	source := filepath.Join(filepath.Dir(plan.State), "control-masks", "opencode", ".gitignore")
-	joined := strings.Join(plan.Bwrap, "\x00")
-	if !strings.Contains(joined, "--bind\x00"+source+"\x00"+destination) {
-		t.Fatalf("bwrap plan does not mount disposable OpenCode gitignore: %#v", plan.Bwrap)
-	}
-	foundCleanup := false
-	for _, cleanup := range plan.ControlCleanup {
-		if cleanup.path == destination && cleanup.kind == controlPlainFile {
-			foundCleanup = true
+		if len(plan.ProtectedPaths) != 0 {
+			t.Fatalf("protected absent paths: %v", plan.ProtectedPaths)
 		}
-	}
-	if !foundCleanup {
-		t.Fatalf("missing gitignore mountpoint cleanup: %#v", plan.ControlCleanup)
+		for _, path := range []string{projectConfigName, "opencode.json", "opencode.jsonc", ".pi", ".opencode/.gitignore"} {
+			if _, err := os.Lstat(filepath.Join(project, path)); !os.IsNotExist(err) {
+				t.Fatalf("created %s: %v", path, err)
+			}
+			if strings.Contains(strings.Join(plan.Bwrap, "\x00"), filepath.Join(project, path)) {
+				t.Fatalf("mount for absent path %s", path)
+			}
+		}
+		var output bytes.Buffer
+		if err := writePlanJSON(&output, plan); err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			ProtectedPaths []string `json:"protected_paths"`
+		}
+		if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if len(decoded.ProtectedPaths) != 0 {
+			t.Fatal(decoded.ProtectedPaths)
+		}
 	}
 }
 
@@ -112,11 +76,7 @@ func TestOpenCodeGitignoreBackingPreservesHostContents(t *testing.T) {
 	if !bytes.Equal(content, hostContent) {
 		t.Fatalf("OpenCode gitignore backing content = %q, want %q", content, hostContent)
 	}
-	for _, cleanup := range plan.ControlCleanup {
-		if cleanup.path == filepath.Join(project, ".opencode", ".gitignore") {
-			t.Fatalf("existing host gitignore scheduled for cleanup: %#v", plan.ControlCleanup)
-		}
-	}
+
 }
 
 func TestOpenCodeGitignoreCopyIsSizeLimited(t *testing.T) {
@@ -177,6 +137,12 @@ func TestExistingPiResourcesProtectOnlyControlSurfaces(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(project, ".pi", "prompts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	for _, relative := range []string{".pi/extensions", ".pi/npm", ".pi/git"} {
+		if err := os.MkdirAll(filepath.Join(project, relative), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(project, ".pi/settings.json"), "{}")
 	plan, err := BuildPlan(controlTestOptions(project, "protected-pi"))
 	if err != nil {
 		t.Fatal(err)
@@ -204,7 +170,6 @@ func TestGitControlPathsAreProtected(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(project, ".git", "config"),
 		filepath.Join(project, ".git", "hooks"),
-		filepath.Join(project, ".git", "config.worktree"),
 	} {
 		if !strings.Contains(joined, path) {
 			t.Errorf("missing Git protection %s: %#v", path, plan.ProtectedPaths)
@@ -253,7 +218,7 @@ func TestControlProtectionEscapeAndStateOnly(t *testing.T) {
 	}
 }
 
-func TestProjectConfigSymlinkRequiresEscapeHatch(t *testing.T) {
+func TestProjectConfigSymlinkCannotBypassTrust(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	project := t.TempDir()
 	target := filepath.Join(t.TempDir(), "config.toml")
@@ -270,10 +235,11 @@ func TestProjectConfigSymlinkRequiresEscapeHatch(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	opts, code, err := parseOptions([]string{"run", projectArg, "--allow-control-file-writes", "/bin/true"}, &stdout, &stderr)
-	if err != nil || code != 0 || opts.Network != "host" || !opts.AllowControlFileWrites {
-		t.Fatalf("escaped project symlink config = %#v, code %d, err %v, stderr %q", opts, code, err, stderr.String())
+	_, code, err := parseOptions([]string{"run", projectArg, "--allow-control-file-writes", "/bin/true"}, &stdout, &stderr)
+	if err == nil || code != 2 || !strings.Contains(err.Error(), "is a symlink") {
+		t.Fatalf("escape bypassed project config symlink rejection: code %d, err %v", code, err)
 	}
+
 }
 
 func TestControlWriteEscapeIsNotAConfigOption(t *testing.T) {
@@ -283,117 +249,5 @@ func TestControlWriteEscapeIsNotAConfigOption(t *testing.T) {
 	}
 	if _, _, err := loadConfigFile(path); err == nil {
 		t.Fatalf("config escape option error = %v", err)
-	}
-}
-
-func TestTemporaryControlPlaceholdersAreRemoved(t *testing.T) {
-	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	project := t.TempDir()
-	plan, err := BuildPlan(controlTestOptions(project, "placeholder-lifecycle"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	control, err := newLaunchControlFiles(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := control.prepare(plan.ControlCleanup); err != nil {
-		t.Fatal(err)
-	}
-	for _, cleanup := range plan.ControlCleanup {
-		if _, err := os.Lstat(cleanup.path); err != nil {
-			t.Fatalf("placeholder %s was not created: %v", cleanup.path, err)
-		}
-	}
-	if err := control.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for _, cleanup := range plan.ControlCleanup {
-		if _, err := os.Lstat(cleanup.path); !os.IsNotExist(err) {
-			t.Fatalf("placeholder %s remained after cleanup: %v", cleanup.path, err)
-		}
-	}
-}
-
-func TestControlPlaceholdersAreSharedAcrossConcurrentInstances(t *testing.T) {
-	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	project := t.TempDir()
-	plan, err := BuildPlan(controlTestOptions(project, "placeholder-shared-one"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := newLaunchControlFiles(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := newLaunchControlFiles(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := first.prepare(plan.ControlCleanup); err != nil {
-		t.Fatal(err)
-	}
-	if err := second.prepare(plan.ControlCleanup); err != nil {
-		t.Fatal(err)
-	}
-	if err := first.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for _, cleanup := range plan.ControlCleanup {
-		if _, err := os.Lstat(cleanup.path); err != nil {
-			t.Fatalf("shared placeholder %s was removed while still leased: %v", cleanup.path, err)
-		}
-	}
-	if err := second.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for _, cleanup := range plan.ControlCleanup {
-		if _, err := os.Lstat(cleanup.path); !os.IsNotExist(err) {
-			t.Fatalf("shared placeholder %s remained after the last lease: %v", cleanup.path, err)
-		}
-	}
-}
-
-func TestStaleControlPlaceholdersAreReusedAndRecovered(t *testing.T) {
-	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-	project := t.TempDir()
-	plan, err := BuildPlan(controlTestOptions(project, "placeholder-stale-one"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	crashed, err := newLaunchControlFiles(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := crashed.prepare(plan.ControlCleanup); err != nil {
-		t.Fatal(err)
-	}
-	if err := unix.Flock(crashed.lifetimeFD, unix.LOCK_UN); err != nil {
-		t.Fatal(err)
-	}
-	if err := unix.Close(crashed.lifetimeFD); err != nil {
-		t.Fatal(err)
-	}
-	crashed.lifetimeFD = -1
-	crashed.once.Do(func() {})
-
-	secondPlan, err := BuildPlan(controlTestOptions(project, "placeholder-stale-two"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	recovery, err := newLaunchControlFiles(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := recovery.prepare(secondPlan.ControlCleanup); err != nil {
-		t.Fatal(err)
-	}
-	if err := recovery.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for _, cleanup := range plan.ControlCleanup {
-		if _, err := os.Lstat(cleanup.path); !os.IsNotExist(err) {
-			t.Fatalf("stale placeholder %s was not recovered: %v", cleanup.path, err)
-		}
 	}
 }

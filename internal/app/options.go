@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -74,8 +73,14 @@ type cliOptions struct {
 	Command                []string   `arg:"" name:"program-and-args" passthrough:"partial" help:"Program to execute followed by its arguments."`
 }
 
+type configTrustOptions struct {
+	Project string `name:"project" type:"path" default:"." help:"Project directory whose configuration approval to manage."`
+}
+
 type configOptions struct {
-	Create struct {
+	Trust   configTrustOptions `cmd:"" help:"Approve the exact contents of project configuration after reviewing it."`
+	Untrust configTrustOptions `cmd:"" help:"Remove approval for project configuration."`
+	Create  struct {
 		Project struct{} `cmd:"" help:"Create a documented .bwrap-agent.toml in the current directory."`
 		User    struct{} `cmd:"" help:"Create documented configuration for the current user across all projects."`
 	} `cmd:"" help:"Create a documented project or user configuration file."`
@@ -107,6 +112,8 @@ const (
 	commandRun commandKind = iota + 1
 	commandConfigCreateProject
 	commandConfigCreateUser
+	commandConfigTrust
+	commandConfigUntrust
 	commandInstanceList
 	commandInstanceDelete
 )
@@ -114,6 +121,7 @@ const (
 type parsedCLI struct {
 	Command        commandKind
 	Run            cliOptions
+	ConfigTrust    configTrustOptions
 	InstanceList   instanceListOptions
 	InstanceDelete instanceDeleteOptions
 }
@@ -170,6 +178,10 @@ func parseCLI(args []string, stdout, stderr io.Writer) (parsed parsedCLI, code i
 		return parsedCLI{Command: commandConfigCreateProject}, 0, nil
 	case "config create user":
 		return parsedCLI{Command: commandConfigCreateUser}, 0, nil
+	case "config trust":
+		return parsedCLI{Command: commandConfigTrust, ConfigTrust: root.Config.Trust}, 0, nil
+	case "config untrust":
+		return parsedCLI{Command: commandConfigUntrust, ConfigTrust: root.Config.Untrust}, 0, nil
 	case "instance list":
 		return parsedCLI{Command: commandInstanceList, InstanceList: root.Instance.List}, 0, nil
 	case "instance delete <name>":
@@ -190,18 +202,6 @@ func mergeCLIOptions(cli cliOptions, stderr io.Writer) (Options, int, error) {
 	if err != nil {
 		fmt.Fprintf(stderr, "bwrap-agent: %v\n", err)
 		return Options{}, 2, err
-	}
-	if !cli.AllowControlFileWrites && !cli.NoConfig && !cli.NoProjectConfig {
-		configPath := filepath.Join(project, projectConfigName)
-		if info, inspectErr := os.Lstat(configPath); inspectErr == nil && info.Mode()&os.ModeSymlink != 0 {
-			err = fmt.Errorf("project configuration %s is a symlink; refusing to trust a retargetable control file (use --allow-control-file-writes to bypass this protection)", configPath)
-			fmt.Fprintf(stderr, "bwrap-agent: %v\n", err)
-			return Options{}, 2, err
-		} else if inspectErr != nil && !errors.Is(inspectErr, os.ErrNotExist) {
-			err = fmt.Errorf("inspect project configuration %s: %w", configPath, inspectErr)
-			fmt.Fprintf(stderr, "bwrap-agent: %v\n", err)
-			return Options{}, 2, err
-		}
 	}
 	layers, sources, err := loadConfiguration(project, cli.NoConfig, cli.NoProjectConfig)
 	if err != nil {
@@ -260,6 +260,13 @@ func Main(args []string) int {
 	if err != nil || code != 0 {
 		return code
 	}
+	if parsed.Command == commandConfigTrust || parsed.Command == commandConfigUntrust {
+		if err := setProjectConfigTrust(parsed.ConfigTrust.Project, parsed.Command == commandConfigTrust, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
+			return 2
+		}
+		return 0
+	}
 	if parsed.Command == commandConfigCreateProject || parsed.Command == commandConfigCreateUser {
 		var err error
 		if parsed.Command == commandConfigCreateProject {
@@ -303,27 +310,13 @@ func Main(args []string) int {
 		return 2
 	}
 	var launchSignals chan os.Signal
-	var control *launchControlFiles
-	workspaceMode, policyErr := resolveWorkspaceMode(opts.WorkspaceMode)
-	if policyErr != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", policyErr)
-		return 2
-	}
 	if !opts.DryRun {
 		launchSignals = make(chan os.Signal, 8)
 		signal.Notify(launchSignals, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
 		defer signal.Stop(launchSignals)
-		if workspaceMode == "write-through" && !opts.AllowControlFileWrites {
-			control, err = newLaunchControlFiles(identity.Project)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "bwrap-agent: prepare control-path coordination: %v\n", err)
-				return 126
-			}
-		}
 	}
 	plan, err := buildPlan(opts, identity)
 	if err != nil {
-		_ = control.Close()
 		fmt.Fprintf(os.Stderr, "bwrap-agent: %v\n", err)
 		return 2
 	}
@@ -348,34 +341,24 @@ func Main(args []string) int {
 	if plan.ProxyGuestPort != 0 {
 		policy, policyErr := parseNetworkPolicy(plan.NetworkAllow)
 		if policyErr != nil {
-			_ = control.Close()
 			fmt.Fprintf(os.Stderr, "bwrap-agent: invalid network allowlist: %v\n", policyErr)
 			return 2
 		}
 		proxy, err = startNetworkProxy(policy)
 		if err != nil {
-			_ = control.Close()
 			fmt.Fprintf(os.Stderr, "bwrap-agent: start network policy proxy: %v\n", err)
 			return 126
 		}
 		defer proxy.Close()
 		argv, err = plan.runtimeArgv(proxy.port(), proxy.dnsPort())
 		if err != nil {
-			_ = control.Close()
 			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare private network: %v\n", err)
 			return 126
 		}
 	}
-	if control != nil {
-		if err := control.prepare(plan.ControlCleanup); err != nil {
-			_ = control.Close()
-			fmt.Fprintf(os.Stderr, "bwrap-agent: prepare control-path protection: %v\n", err)
-			return 126
-		}
-	}
+
 	select {
 	case received := <-launchSignals:
-		_ = control.Close()
 		if sig, ok := received.(syscall.Signal); ok {
 			return 128 + int(sig)
 		}
@@ -396,14 +379,10 @@ func Main(args []string) int {
 	if plan.LaunchEnv["BWRAP_AGENT_PODMAN"] == "1" {
 		pauseErr = stopVerifiedPodmanPauseProcess(identity.Root, identity.Root)
 	}
-	controlErr := control.Close()
 	if pauseErr != nil {
 		fmt.Fprintf(os.Stderr, "bwrap-agent: clean up Podman pause process: %v\n", pauseErr)
 		return 126
 	}
-	if controlErr != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: clean up control-path placeholders: %v\n", controlErr)
-		return 126
-	}
+
 	return status
 }

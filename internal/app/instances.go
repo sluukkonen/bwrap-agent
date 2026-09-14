@@ -202,7 +202,7 @@ func readInstanceMetadata(root string) (instanceMetadata, error) {
 		return instanceMetadata{}, err
 	}
 	defer unix.Close(rootFD)
-	fd, err := unix.Openat(rootFD, instanceMetadataName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat(rootFD, instanceMetadataName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return instanceMetadata{}, err
 	}
@@ -352,6 +352,10 @@ func resolveAndLockInstance(opts Options) (instanceIdentity, *instanceLock, erro
 }
 
 func resolveManagedInstanceLocked(project, requested string, git gitMetadata, roBind, rwBind []string) (instanceIdentity, *instanceLock, error) {
+	if _, err := projectTrustStore(project, git.ExternalCommon, rwBind); err != nil {
+		return instanceIdentity{}, nil, err
+	}
+
 	lexicalStore, store, err := managedInstancesPaths()
 	if err != nil {
 		return instanceIdentity{}, nil, err

@@ -50,6 +50,7 @@ mkdir "$config_create_project"
     test -f .bwrap-agent.toml
     "$binary" config create user
     test -f "$XDG_CONFIG_HOME/bwrap-agent/config.toml"
+    "$binary" config trust
     if "$binary" config create >/dev/null 2>&1; then
         exit 1
     fi
@@ -236,6 +237,7 @@ printf '%s\n' \
     'CONFIG_USER = "project"' \
     'CONFIG_EMPTY = ""' \
     >"$config_project/.bwrap-agent.toml"
+"$binary" config trust --project "$config_project"
 
 CONFIG_HOST=from-host XDG_CONFIG_HOME="$config_home" "$binary" \
     run \
@@ -280,13 +282,17 @@ test ! -e "$agent_config/opencode/write-probe"
 printf 'opencode-agent-ok\n'
 
 protected_project="$test_root/protected-project"
-mkdir -p "$protected_project/.opencode/plugins" "$protected_project/.pi/prompts"
+mkdir -p "$protected_project/.opencode/plugins" "$protected_project/.opencode/tools" \
+    "$protected_project/.pi/prompts" "$protected_project/.pi/extensions" \
+    "$protected_project/.pi/npm" "$protected_project/.pi/git"
 printf '{}\n' >"$protected_project/opencode.json"
 printf '{}\n' >"$protected_project/.opencode/opencode.json"
 printf 'host-ignore\n' >"$protected_project/.opencode/.gitignore"
 printf '{}\n' >"$protected_project/.pi/settings.json"
 printf '# trusted host configuration\n' >"$protected_project/.bwrap-agent.toml"
 git init -q "$protected_project"
+printf "# worktree config\n" >"$protected_project/.git/config.worktree"
+"$binary" config trust --project "$protected_project"
 "$binary" \
     run --project "$protected_project" --instance integration-protected --podman off --network host --tty never \
     /bin/sh -ec '
@@ -326,12 +332,15 @@ mkdir "$concurrent_project"
     run --project "$concurrent_project" --instance integration-concurrent-one --podman off --network host --tty never \
     /bin/sh -ec 'printf started >started; while ! test -e release; do sleep 0.02; done' &
 first_launcher=$!
-while ! test -e "$concurrent_project/started"; do sleep 0.02; done
+while ! test -e "$concurrent_project/started"; do kill -0 "$first_launcher"; sleep 0.02; done
 "$binary" \
     run --project "$concurrent_project" --instance integration-concurrent-two --podman off --network host --tty never \
     /bin/true
-test -e "$concurrent_project/.bwrap-agent.toml"
-test -e "$concurrent_project/opencode.json"
+test ! -e "$concurrent_project/.bwrap-agent.toml"
+test ! -e "$concurrent_project/opencode.json"
+test ! -e "$concurrent_project/opencode.jsonc"
+test ! -e "$concurrent_project/.opencode"
+test ! -e "$concurrent_project/.pi"
 touch "$concurrent_project/release"
 wait "$first_launcher"
 test ! -e "$concurrent_project/.bwrap-agent.toml"
@@ -345,9 +354,9 @@ signal_project="$test_root/signal-control-project"
 mkdir "$signal_project"
 "$binary" \
     run --project "$signal_project" --instance integration-signal-cleanup --podman off --network host --tty never \
-    /bin/sh -ec 'while :; do sleep 1; done' &
+    /bin/sh -ec 'printf started >started; while :; do sleep 1; done' &
 signal_launcher=$!
-while ! test -e "$signal_project/.bwrap-agent.toml"; do
+while ! test -e "$signal_project/started"; do
     kill -0 "$signal_launcher"
     sleep 0.01
 done
@@ -362,6 +371,52 @@ test ! -e "$signal_project/opencode.jsonc"
 test ! -e "$signal_project/.opencode"
 test ! -e "$signal_project/.pi"
 printf 'signal-control-paths-ok\n'
+
+created_project="$test_root/created-control-project"
+mkdir "$created_project"
+"$binary" run --project "$created_project" --podman off --network host --tty never \
+    /bin/sh -ec '
+        test ! -e .bwrap-agent.toml
+        test ! -e opencode.json
+        test ! -e opencode.jsonc
+        test ! -e .opencode
+        test ! -e .pi
+        printf "network = \"host\"\n" >.bwrap-agent.toml
+        printf "{}\n" >opencode.json
+        mkdir .opencode
+        printf housekeeping >.opencode/.gitignore
+    '
+test -f "$created_project/.bwrap-agent.toml"
+test "$(cat "$created_project/.opencode/.gitignore")" = housekeeping
+if "$binary" run --project "$created_project" --podman off --tty never /bin/true >"$test_root/untrusted.log" 2>&1; then
+    echo 'agent-created project configuration was automatically trusted' >&2
+    exit 1
+fi
+grep -q 'config trust' "$test_root/untrusted.log"
+"$binary" config trust --project "$created_project"
+"$binary" run --project "$created_project" --podman off --tty never /bin/sh -ec '
+    if (printf changed >opencode.json) 2>/dev/null; then exit 1; fi
+    if (printf changed >.bwrap-agent.toml) 2>/dev/null; then exit 1; fi
+'
+printf '# changed\n' >>"$created_project/.bwrap-agent.toml"
+if "$binary" run --project "$created_project" --dry-run /bin/true >"$test_root/untrusted.log" 2>&1; then
+    echo 'changed project configuration was automatically trusted' >&2
+    exit 1
+fi
+"$binary" config trust --project "$created_project"
+"$binary" config untrust --project "$created_project"
+if "$binary" run --project "$created_project" --dry-run /bin/true >"$test_root/untrusted.log" 2>&1; then
+    echo 'revoked project configuration was automatically trusted' >&2
+    exit 1
+fi
+"$binary" run --project "$created_project" --no-project-config --podman off --network host --tty never /bin/true
+"$binary" run --project "$created_project" --no-config --podman off --network host --tty never /bin/true
+if "$binary" run --project "$default_project" --no-config --rw-bind "$BWRAP_AGENT_STATE_HOME/trusted-projects" --podman off --network host --tty never /bin/true >"$test_root/trust-store.log" 2>&1; then
+    echo 'sandbox was allowed to write the trust store' >&2
+    exit 1
+fi
+grep -q 'trust store' "$test_root/trust-store.log"
+printf 'project-config-trust-ok\n'
 
 pi_home="$test_root/pi-home"
 pi_agent="$pi_home/.pi/agent"

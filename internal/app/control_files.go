@@ -8,32 +8,17 @@ import (
 	"sort"
 )
 
-type controlPathKind uint8
-
-const (
-	controlPlainFile controlPathKind = iota + 1
-	controlJSONFile
-	controlDirectory
-)
-
 const maxOpenCodeGitignoreSize = 1024 * 1024
 
 type controlPathSpec struct {
 	root     string
 	relative string
-	kind     controlPathKind
-	mask     string
 }
 
 type controlMount struct {
 	option      string
 	source      string
 	destination string
-}
-
-type controlCleanup struct {
-	path string
-	kind controlPathKind
 }
 
 // inspectControlPath walks beneath a previously canonicalized root without
@@ -67,29 +52,9 @@ func inspectControlPath(root, relative string) (string, bool, error) {
 	return filepath.Join(root, relative), true, nil
 }
 
-func controlMask(identity instanceIdentity, kind controlPathKind) (string, error) {
-	switch kind {
-	case controlDirectory:
-		path, err := ensureStateDirectory(identity.Root, "control-masks/empty-dir", 0o700)
-		if err != nil {
-			return "", err
-		}
-		if err := os.Chmod(path, 0o500); err != nil {
-			return "", err
-		}
-		return path, nil
-	case controlJSONFile:
-		return writeStateFile(identity.Root, "control-masks/empty.json", []byte("{}\n"), 0o400)
-	case controlPlainFile:
-		return writeStateFile(identity.Root, "control-masks/empty-file", nil, 0o400)
-	default:
-		return "", errors.New("unknown control-path mask kind")
-	}
-}
-
 // OpenCode writes .opencode/.gitignore while loading project configuration.
-// Give that housekeeping file a writable, instance-local backing file while
-// the surrounding project control directory remains read-only.
+// Give that housekeeping file a writable, instance-local backing file without
+// modifying the existing host file.
 func openCodeControlMask(identity instanceIdentity, content []byte) (string, string, error) {
 	directory, err := ensureStateDirectory(identity.Root, "control-masks/opencode", 0o700)
 	if err != nil {
@@ -129,116 +94,97 @@ func piNeedsIndividualProtection(project string) (bool, error) {
 	return false, nil
 }
 
-func prepareControlFileProtection(opts Options, identity instanceIdentity) ([]controlMount, []string, []controlCleanup, error) {
+func prepareControlFileProtection(opts Options, identity instanceIdentity) ([]controlMount, []string, error) {
 	if opts.AllowControlFileWrites || opts.WorkspaceMode != "write-through" {
-		return nil, nil, nil, nil
+		return nil, nil, nil
 	}
 	project := identity.Project
 	var pins []controlMount
 	specs := []controlPathSpec{
-		{root: project, relative: projectConfigName, kind: controlPlainFile},
-		{root: project, relative: "opencode.json", kind: controlJSONFile},
-		{root: project, relative: "opencode.jsonc", kind: controlJSONFile},
+		{root: project, relative: projectConfigName},
+		{root: project, relative: "opencode.json"},
+		{root: project, relative: "opencode.jsonc"},
 	}
 	if _, found, err := inspectControlPath(project, ".opencode"); err != nil {
-		return nil, nil, nil, err
-	} else if !found {
-		// This host-only directory remains available if signal handling removes
-		// the temporary project mountpoint while Bubblewrap is still starting.
-		source := filepath.Join(identity.Root, "control-masks", "opencode")
-		specs = append(specs, controlPathSpec{root: project, relative: ".opencode", kind: controlDirectory, mask: source})
-	} else {
+		return nil, nil, err
+	} else if found {
 		pins = append(pins, controlMount{option: "--bind", source: filepath.Join(project, ".opencode"), destination: filepath.Join(project, ".opencode")})
 		specs = append(specs,
-			controlPathSpec{root: project, relative: ".opencode/opencode.json", kind: controlJSONFile},
-			controlPathSpec{root: project, relative: ".opencode/opencode.jsonc", kind: controlJSONFile},
-			controlPathSpec{root: project, relative: ".opencode/plugins", kind: controlDirectory},
-			controlPathSpec{root: project, relative: ".opencode/tools", kind: controlDirectory},
+			controlPathSpec{root: project, relative: ".opencode/opencode.json"},
+			controlPathSpec{root: project, relative: ".opencode/opencode.jsonc"},
+			controlPathSpec{root: project, relative: ".opencode/plugins"},
+			controlPathSpec{root: project, relative: ".opencode/tools"},
 		)
 	}
 
 	individualPi, err := piNeedsIndividualProtection(project)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	if !individualPi {
-		specs = append(specs, controlPathSpec{root: project, relative: ".pi", kind: controlDirectory})
+		specs = append(specs, controlPathSpec{root: project, relative: ".pi"})
 	} else {
 		pins = append(pins, controlMount{option: "--bind", source: filepath.Join(project, ".pi"), destination: filepath.Join(project, ".pi")})
 		specs = append(specs,
-			controlPathSpec{root: project, relative: ".pi/settings.json", kind: controlJSONFile},
-			controlPathSpec{root: project, relative: ".pi/extensions", kind: controlDirectory},
-			controlPathSpec{root: project, relative: ".pi/npm", kind: controlDirectory},
-			controlPathSpec{root: project, relative: ".pi/git", kind: controlDirectory},
+			controlPathSpec{root: project, relative: ".pi/settings.json"},
+			controlPathSpec{root: project, relative: ".pi/extensions"},
+			controlPathSpec{root: project, relative: ".pi/npm"},
+			controlPathSpec{root: project, relative: ".pi/git"},
 		)
 	}
 
 	git := identity.Git
 	if git.DotGit != "" {
 		if git.DotGitFile {
-			specs = append(specs, controlPathSpec{root: project, relative: ".git", kind: controlPlainFile})
+			specs = append(specs, controlPathSpec{root: project, relative: ".git"})
 		}
 		if git.CommonDir != "" {
 			specs = append(specs,
-				controlPathSpec{root: git.CommonDir, relative: "config", kind: controlPlainFile},
-				controlPathSpec{root: git.CommonDir, relative: "hooks", kind: controlDirectory},
+				controlPathSpec{root: git.CommonDir, relative: "config"},
+				controlPathSpec{root: git.CommonDir, relative: "hooks"},
 			)
 		}
 		if git.GitDir != "" {
 			pins = append(pins, controlMount{option: "--bind", source: git.GitDir, destination: git.GitDir})
-			specs = append(specs, controlPathSpec{root: git.GitDir, relative: "config.worktree", kind: controlPlainFile})
+			specs = append(specs, controlPathSpec{root: git.GitDir, relative: "config.worktree"})
 		}
 	}
 
 	seen := map[string]bool{}
 	mounts := append([]controlMount(nil), pins...)
 	var protected []string
-	var cleanup []controlCleanup
 	for _, spec := range specs {
 		destination, found, err := inspectControlPath(spec.root, spec.relative)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		if seen[destination] {
 			continue
 		}
 		seen[destination] = true
-		source := destination
 		if !found {
-			if spec.mask != "" {
-				source = spec.mask
-			} else {
-				source, err = controlMask(identity, spec.kind)
-				if err != nil {
-					return nil, nil, nil, fmt.Errorf("create neutral mask for %s: %w", destination, err)
-				}
-			}
-			cleanup = append(cleanup, controlCleanup{path: destination, kind: spec.kind})
+			continue
 		}
-		mounts = append(mounts, controlMount{option: "--ro-bind", source: source, destination: destination})
+
+		mounts = append(mounts, controlMount{option: "--ro-bind", source: destination, destination: destination})
 		protected = append(protected, destination)
 	}
 	gitignoreDestination, gitignoreFound, err := inspectControlPath(project, ".opencode/.gitignore")
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	var gitignoreContent []byte
 	if gitignoreFound {
 		content, err := readSmallRegularFile(gitignoreDestination, maxOpenCodeGitignoreSize)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("read OpenCode housekeeping file: %w", err)
+			return nil, nil, fmt.Errorf("read OpenCode housekeeping file: %w", err)
 		}
-		gitignoreContent = []byte(content)
-	} else {
-		cleanup = append(cleanup, controlCleanup{path: gitignoreDestination, kind: controlPlainFile})
+		_, backing, err := openCodeControlMask(identity, []byte(content))
+		if err != nil {
+			return nil, nil, fmt.Errorf("create OpenCode housekeeping backing: %w", err)
+		}
+		mounts = append(mounts, controlMount{option: "--bind", source: backing, destination: gitignoreDestination})
 	}
-	_, openCodeGitignore, err := openCodeControlMask(identity, gitignoreContent)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("create OpenCode control mask: %w", err)
-	}
-	// This must follow the read-only .opencode mount so the nested mount is
-	// writable without exposing any host control file to OpenCode.
-	mounts = append(mounts, controlMount{option: "--bind", source: openCodeGitignore, destination: gitignoreDestination})
+
 	sort.Strings(protected)
-	return mounts, protected, cleanup, nil
+	return mounts, protected, nil
 }

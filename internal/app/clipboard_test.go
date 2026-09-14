@@ -300,9 +300,11 @@ func TestClipboardConfigurationAndJSON(t *testing.T) {
 }
 
 func TestClipboardCLIAndFileConfiguration(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	project := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	writeTestFile(t, filepath.Join(project, projectConfigName), "clipboard = \"wayland\"\n")
+	trustTestConfig(t, project)
 	for _, tc := range []struct {
 		extra []string
 		want  string

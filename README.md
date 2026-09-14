@@ -30,7 +30,11 @@ $ ./bin/bwrap-agent run --project . bash
 
 The `run` command requires a program; there is no implicit default agent. The launcher currently detects OpenCode and Pi by executable basename. Their user-managed host configuration, extensions, skills, and packages are exposed read-only, so host edits are visible on the next launch without letting the sandbox rewrite them. Credentials and mutable runtime data remain writable, persistent, and isolated per instance. Use `--no-agent-config` to suppress new host configuration exposure and credential seeding; it never deletes data already stored in an instance.
 
-In the default `write-through` workspace mode, high-impact project control paths are read-only for every target program: `.bwrap-agent.toml`; Git configuration, hooks, and linked-worktree metadata; OpenCode project configuration, plugins, and tools; and Pi project settings, extensions, and package directories. Missing paths receive neutral read-only placeholders, preventing an agent from creating them. OpenCode's required `.opencode/.gitignore` write goes to a launch-local backing file and never changes the host project; existing contents are copied with a 1 MiB safety limit. Prompts, skills, themes, commands, agent definitions, `.mcp.json`, and ordinary source files remain writable. This is defense in depth around conventional paths, not a complete executable-content policy.
+In the default `write-through` workspace mode, existing high-impact project control paths are read-only for every target program: `.bwrap-agent.toml`; Git configuration, hooks, and linked-worktree metadata; OpenCode project configuration, plugins, and tools; and Pi project settings, extensions, and package directories. Missing paths stay absent and writable; the launcher creates no placeholders. New control files become eligible for protection on the next launch. Existing protected directories also block new entries inside them. OpenCode writes to an existing `.opencode/.gitignore` through a private backing file, preserving host contents with a 1 MiB copy limit. If absent, OpenCode may create its own housekeeping file normally. Prompts, skills, themes, commands, agent definitions, `.mcp.json`, and ordinary source files remain writable. This is defense in depth around conventional paths, not a complete executable-content policy.
+
+New agent configurations, plugins, and Git hooks can affect later agent sessions or commands you run on the host. Review generated project content before host execution. The launcher approval described below covers `.bwrap-agent.toml` only; protecting a newly created file on the next launch does not establish that it is trustworthy.
+
+When upgrading from a version that created placeholders, stop its active sessions so they can clean up. Review any remaining files from interrupted sessions before removing them manually; the new version does not automatically delete these files.
 
 For OpenCode, `$XDG_CONFIG_HOME/opencode` is mounted read-only while `$XDG_DATA_HOME/opencode`, including a seed-once copy of `auth.json`, remains instance-local. Host `OPENCODE_CONFIG`, `OPENCODE_TUI_CONFIG`, and `OPENCODE_CONFIG_DIR` path overrides are mapped to read-only sandbox paths. Other OpenCode environment settings still require an explicit `--env` or `[env]` entry.
 
@@ -81,6 +85,7 @@ Create a behavior-neutral, fully commented project configuration reference in th
 ```console
 $ ./bin/bwrap-agent config create project
 Created /path/to/project/.bwrap-agent.toml
+Review the file, then run bwrap-agent config trust.
 ```
 
 Create a user configuration reference that applies across all your projects with:
@@ -91,6 +96,17 @@ Created /home/alice/.config/bwrap-agent/config.toml
 ```
 
 The user command honors `XDG_CONFIG_HOME` and creates missing parent directories. Its template omits the project-only `instance` setting. Both commands refuse to replace an existing file and do not load configuration or start a sandbox. Bare `config create` requires a scope and creates nothing.
+
+Before a project configuration can be loaded, review it and approve its exact contents on the host:
+
+```console
+$ ./bin/bwrap-agent config trust --project /path/to/project
+$ ./bin/bwrap-agent config untrust --project /path/to/project
+```
+
+Both commands default to the current directory. `trust` validates the configuration and records its canonical project path and SHA-256 digest; `untrust` removes that approval. No launch-time confirmation is shown. New, changed (including comments), or unapproved configuration stops launches and dry runs before its settings are applied, with instructions to review and approve it. Existing configurations require initial approval after upgrading, and moving a project requires approval at its new location. The file must be regular, must not be a symlink, and must be at most 1 MiB. `config create project` does not automatically approve its output.
+
+Approvals are stored outside the sandbox in `trusted-projects` under the host state directory (`BWRAP_AGENT_STATE_HOME`, otherwise `$XDG_STATE_HOME/bwrap-agent`, otherwise `~/.local/state/bwrap-agent`). Changing the state directory selects a different approval store. Sandbox-writable paths must not overlap this store or its path aliases. User-level configuration retains its existing trust model.
 
 Missing files are ignored. Existing files are parsed strictly: unknown keys, invalid values, and wrong types stop the launch instead of being silently ignored. `--no-project-config` skips the project file, while `--no-config` skips both files. `--help` remains available even when a config file is broken.
 
@@ -118,11 +134,11 @@ FROM_HOST = { inherit = true }
 
 Scalar settings are replaced by higher-precedence layers. `instance` is accepted only in the project file, and `--instance` takes precedence over it. `network_allow`, `publish`, `ro_bind`, and `rw_bind` arrays are appended; duplicate normalized network origins are removed, and relative bind paths are resolved from the directory containing their config file. Environment entries merge by name. A string is literal, including an empty string, while `{ inherit = true }` deliberately copies the same-named variable from the launcher's host environment. If that variable is absent, it remains unset. The equivalent CLI forms are `--env NAME=value`, `--env NAME=`, and `--env NAME`.
 
-> **Warning:** Project configuration is fully trusted and is evaluated before the sandbox starts. It can request arbitrary host bind mounts, select host networking, and expose sensitive host environment variables. Inspect `.bwrap-agent.toml` in an untrusted checkout or launch with `run --no-project-config`. A project configuration symlink is rejected by default because a writable checkout could retarget it between runs.
+> **Warning:** Approved project configuration is evaluated before the sandbox starts. It can request arbitrary host bind mounts, select host networking, and expose host environment variables. Review `.bwrap-agent.toml` before approving it, or launch with `run --no-project-config` to ignore it. Approval authorizes the exact configuration bytes, not the contents of referenced paths.
 
 `project`, the target command, and action/recovery options are intentionally not accepted in TOML. Use `run --dry-run` to inspect the effective launch plan and the user/project config files that were loaded.
 
-For an exceptional trusted workflow that must edit the built-in control paths, use the CLI-only `run --allow-control-file-writes` escape hatch. It disables the complete built-in control-path policy and prints a warning in `write-through`; it has no additional effect in the other workspace modes. It also permits loading a symlinked project configuration, so use it only after reviewing the checkout. The escape hatch is deliberately unavailable in TOML.
+For an exceptional trusted workflow that must edit the built-in control paths, use the CLI-only `run --allow-control-file-writes` escape hatch. It disables the complete built-in control-path policy and prints a warning in `write-through`; it has no additional effect in the other workspace modes. It does not bypass configuration approval or permit symlinked project configuration. The escape hatch is deliberately unavailable in TOML.
 
 Workspace behavior is independent of persistent instance state. For a writable view whose changes are discarded at exit, use `copy-on-write`:
 

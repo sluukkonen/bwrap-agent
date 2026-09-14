@@ -15,7 +15,12 @@ import (
 const maxGitPointerSize = 64 * 1024
 
 func readSmallRegularFile(path string, limit int64) (string, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	return readSmallRegularFileAt(unix.AT_FDCWD, path, limit)
+}
+
+func readSmallRegularFileAt(directory int, path string, limit int64) (string, error) {
+	// O_NONBLOCK lets us reject FIFOs without waiting for a writer.
+	fd, err := unix.Openat(directory, path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return "", err
 	}

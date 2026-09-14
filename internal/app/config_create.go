@@ -13,8 +13,8 @@ const projectConfigName = ".bwrap-agent.toml"
 
 const projectConfigTemplate = `# bwrap-agent project configuration
 #
-# This file is fully trusted and is read before the sandbox starts. Inspect it
-# before running bwrap-agent in an untrusted checkout.
+# This file controls host access and is read before the sandbox starts. Review
+# it, then run bwrap-agent config trust. Every edit requires approval again.
 #
 # Settings are applied in this order: user configuration, this project file,
 # then run-command options. Uncomment only the settings you want to override.
@@ -146,7 +146,7 @@ func createProjectConfigAndReport(directory string, stdout io.Writer) error {
 	if err := createProjectConfig(absolute); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "Created %s\n", filepath.Join(absolute, projectConfigName))
+	_, err = fmt.Fprintf(stdout, "Created %s\nReview the file, then run bwrap-agent config trust.\n", filepath.Join(absolute, projectConfigName))
 	return err
 }
 

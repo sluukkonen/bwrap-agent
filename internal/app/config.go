@@ -2,12 +2,14 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+	"golang.org/x/sys/unix"
 )
 
 type fileConfig struct {
@@ -81,7 +83,14 @@ func loadConfiguration(project string, noConfig, noProjectConfig bool) ([]option
 	layers := make([]optionLayer, 0, len(candidates))
 	sources := make([]ConfigSource, 0, len(candidates))
 	for _, source := range candidates {
-		layer, found, err := loadConfigFile(source.Path)
+		var layer optionLayer
+		var found bool
+		var err error
+		if source.Scope == "project" {
+			layer, found, err = loadTrustedProjectConfig(project)
+		} else {
+			layer, found, err = loadConfigFile(source.Path)
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("configuration %s: %w", source.Path, err)
 		}
@@ -97,7 +106,7 @@ func loadConfiguration(project string, noConfig, noProjectConfig bool) ([]option
 }
 
 func loadConfigFile(path string) (optionLayer, bool, error) {
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return optionLayer{}, false, nil
@@ -112,16 +121,21 @@ func loadConfigFile(path string) (optionLayer, bool, error) {
 	if !info.Mode().IsRegular() {
 		return optionLayer{}, false, fmt.Errorf("not a regular file")
 	}
+	layer, err := decodeConfig(file, filepath.Dir(path))
+	return layer, err == nil, err
+}
+
+func decodeConfig(reader io.Reader, base string) (optionLayer, error) {
 	var decoded fileConfig
-	decoder := toml.NewDecoder(file).DisallowUnknownFields()
+	decoder := toml.NewDecoder(reader).DisallowUnknownFields()
 	if err := decoder.Decode(&decoded); err != nil {
-		return optionLayer{}, false, err
+		return optionLayer{}, err
 	}
-	layer, err := makeConfigLayer(decoded, filepath.Dir(path))
+	layer, err := makeConfigLayer(decoded, base)
 	if err != nil {
-		return optionLayer{}, false, err
+		return optionLayer{}, err
 	}
-	return layer, true, nil
+	return layer, nil
 }
 
 func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, error) {

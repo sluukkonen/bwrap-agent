@@ -50,7 +50,6 @@ type LaunchPlan struct {
 	TTY             bool
 	ConfigFiles     []ConfigSource
 	ProtectedPaths  []string
-	ControlCleanup  []controlCleanup
 	Warnings        []string
 }
 

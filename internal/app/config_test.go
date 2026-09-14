@@ -11,6 +11,7 @@ import (
 )
 
 func TestConfigurationPrecedenceAndEnvironment(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	root := t.TempDir()
 	project := filepath.Join(root, "project")
 	userDirectory := filepath.Join(root, "config", "bwrap-agent")
@@ -62,6 +63,7 @@ PRESENT = { inherit = true }
 	t.Setenv("MISSING_FALLBACK", "temporarily-present")
 	os.Unsetenv("MISSING_FALLBACK")
 
+	trustTestConfig(t, project)
 	var stdout, stderr bytes.Buffer
 	opts, code, err := parseOptions([]string{
 		"run",
@@ -123,12 +125,14 @@ PRESENT = { inherit = true }
 }
 
 func TestInstanceIsProjectConfigurable(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	root := t.TempDir()
 	project := filepath.Join(root, "project")
 	if err := os.MkdirAll(project, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(project, projectConfigName), `instance = "configured-instance"`)
+	trustTestConfig(t, project)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "empty-config"))
 
 	parse := func(extra ...string) Options {
@@ -185,6 +189,8 @@ func TestProjectConfiguredInstanceRetainsProjectOwnership(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "empty-config"))
 	t.Setenv("BWRAP_AGENT_STATE_HOME", filepath.Join(root, "state-home"))
 
+	trustTestConfig(t, projectA)
+	trustTestConfig(t, projectB)
 	parse := func(project string) Options {
 		opts, code, err := parseOptions([]string{"run", "--project", project, "/bin/true"}, &bytes.Buffer{}, &bytes.Buffer{})
 		if err != nil || code != 0 {

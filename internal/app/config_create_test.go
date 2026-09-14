@@ -67,7 +67,7 @@ func TestCreateProjectConfigAndReportCreatesFile(t *testing.T) {
 	if err := createProjectConfigAndReport(".", &stdout); err != nil {
 		t.Fatal(err)
 	}
-	if stdout.String() != "Created "+filepath.Join(directory, projectConfigName)+"\n" {
+	if stdout.String() != "Created "+filepath.Join(directory, projectConfigName)+"\nReview the file, then run bwrap-agent config trust.\n" {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 	info, err := os.Stat(filepath.Join(directory, projectConfigName))

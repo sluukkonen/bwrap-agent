@@ -366,7 +366,7 @@ type mountBuilder struct {
 }
 
 func openInjectedFile(path string) (*os.File, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -860,7 +860,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 	for _, source := range identity.RWBind {
 		mounts.mount("--bind", source, source)
 	}
-	controlMounts, protectedPaths, controlCleanup, err := prepareControlFileProtection(opts, identity)
+	controlMounts, protectedPaths, err := prepareControlFileProtection(opts, identity)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
@@ -993,7 +993,7 @@ func buildPlan(opts Options, identity instanceIdentity) (LaunchPlan, error) {
 		Launcher: launcher,
 		Bwrap:    bwrap, Ports: ports, LaunchEnv: launchEnv,
 		TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: protectedPaths,
-		ControlCleanup: controlCleanup, Warnings: warnings}, nil
+		Warnings: warnings}, nil
 }
 
 func boolString(value bool) string {
