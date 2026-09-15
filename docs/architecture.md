@@ -32,6 +32,8 @@ Config scalars replace lower values, while network-allow, mount, and publish lis
 
 ## Filesystem view
 
+`buildPlan` delegates ordered filesystem assembly to `buildFilesystemLayout`. The layout builder collects destination directories before emitting mounts, then layers system files, workspace and state, explicit binds, control-file protection, resource configuration, and executable snapshots. It returns the filesystem arguments, protected paths, and resolved launcher executable; `buildPlan` adds environment, seccomp, and command arguments and retains cleanup ownership for generated files.
+
 The root begins as an empty tmpfs. The launcher adds:
 
 | Path | Access | Purpose |

@@ -251,3 +251,36 @@ func TestControlWriteEscapeIsNotAConfigOption(t *testing.T) {
 		t.Fatalf("config escape option error = %v", err)
 	}
 }
+
+// An explicit writable ancestor must not hide the later control-file mount.
+func TestControlProtectionFollowsExplicitWritableBind(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	project := t.TempDir()
+	pi := filepath.Join(project, ".pi")
+	if err := os.Mkdir(pi, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := filepath.Join(pi, "settings.json")
+	writeTestFile(t, settings, "{}")
+	opts := controlTestOptions(project, "control-mount-order")
+	opts.RWBind = []string{pi}
+	plan, err := BuildPlan(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(plan.Bwrap, "\x00")
+	writable := strings.Index(joined, strings.Join([]string{"--bind", pi, pi}, "\x00"))
+	protected := strings.Index(joined, strings.Join([]string{"--ro-bind", settings, settings}, "\x00"))
+	if writable < 0 || protected <= writable {
+		t.Fatalf("control protection must follow writable ancestor: %#v", plan.Bwrap)
+	}
+	found := false
+	for _, path := range plan.ProtectedPaths {
+		if path == settings {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("protected settings missing from plan metadata: %#v", plan.ProtectedPaths)
+	}
+}
