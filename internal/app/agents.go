@@ -22,7 +22,7 @@ type agentAdapter struct {
 	name                   string
 	programNames           map[string]bool
 	prepare                func(hostContext, bool) (agentSetup, error)
-	resolveExternalCommand func(hostContext, []string, string) ([]string, agentSetup, error)
+	resolveExternalCommand externalCommandResolver
 }
 
 var agentAdapters = []*agentAdapter{
@@ -241,14 +241,14 @@ func preparePi(context hostContext, config bool) (agentSetup, error) {
 	return setup, nil
 }
 
-func resolvePiExternalCommand(context hostContext, requested []string, resolved string) ([]string, agentSetup, error) {
+func resolvePiExternalCommand(context hostContext, requested []string, resolved string) (preparedCommand, error) {
 	for directory := filepath.Dir(resolved); directory != filepath.Dir(directory); directory = filepath.Dir(directory) {
 		content, err := os.ReadFile(filepath.Join(directory, "package.json"))
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return nil, agentSetup{}, err
+			return preparedCommand{}, err
 		}
 		var manifest struct {
 			Name string `json:"name"`
@@ -258,19 +258,20 @@ func resolvePiExternalCommand(context hostContext, requested []string, resolved 
 		}
 		runtime, err := exec.LookPath("node")
 		if err != nil {
-			return nil, agentSetup{}, fmt.Errorf("Pi requires node in the host PATH")
+			return preparedCommand{}, fmt.Errorf("Pi requires node in the host PATH")
 		}
 		runtime, _, err = context.sources.resolveSource(runtime, false, true)
 		if err != nil {
-			return nil, agentSetup{}, fmt.Errorf("resolve Pi node runtime: %w", err)
+			return preparedCommand{}, fmt.Errorf("resolve Pi node runtime: %w", err)
 		}
 		relative, err := filepath.Rel(directory, resolved)
 		if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return nil, agentSetup{}, fmt.Errorf("Pi entrypoint is outside package root")
+			return preparedCommand{}, fmt.Errorf("Pi entrypoint is outside package root")
 		}
 		destination := "/run/bwrap-agent/command-package"
 		command := append([]string{filepath.Join(destination, relative)}, requested[1:]...)
-		commandSetup := agentSetup{
+		commandSetup := preparedCommand{
+			Argv: command,
 			Mounts: []resourceMount{
 				{Source: runtime, Destination: "/run/bwrap-agent/agent-runtime/node", Executable: true},
 				{Source: directory, Destination: destination},
@@ -279,8 +280,7 @@ func resolvePiExternalCommand(context hostContext, requested []string, resolved 
 				"PATH": "/run/bwrap-agent/agent-runtime:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 			},
 		}
-		return command, commandSetup, nil
+		return commandSetup, nil
 	}
-	command := append([]string{"/run/bwrap-agent/command"}, requested[1:]...)
-	return command, agentSetup{Mounts: []resourceMount{{Source: resolved, Destination: "/run/bwrap-agent/command", Executable: true}}}, nil
+	return standaloneCommand(requested, resolved), nil
 }

@@ -320,13 +320,13 @@ func TestPiNPMEntrypointMountsPackageRoot(t *testing.T) {
 	writeAgentTestFile(t, entrypoint, `#!/usr/bin/env node`)
 	requested := []string{"pi", "--version"}
 	_, context := testHostContext(t)
-	command, setup, err := resolvePiExternalCommand(context, requested, entrypoint)
+	setup, err := resolvePiExternalCommand(context, requested, entrypoint)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantCommand := []string{"/run/bwrap-agent/command-package/dist/cli.js", "--version"}
-	if !reflect.DeepEqual(command, wantCommand) {
-		t.Fatalf("command = %#v, want %#v", command, wantCommand)
+	if !reflect.DeepEqual(setup.Argv, wantCommand) {
+		t.Fatalf("command = %#v, want %#v", setup.Argv, wantCommand)
 	}
 	mounts := mountMap(setup.Mounts)
 	if mounts["/run/bwrap-agent/command-package"] != packageRoot || mounts["/run/bwrap-agent/agent-runtime/node"] == "" {

@@ -319,31 +319,6 @@ func envValue(source []string, name, fallback string) string {
 	return fallback
 }
 
-func resolveCommand(context hostContext, requested []string, adapter *agentAdapter) ([]string, agentSetup, error) {
-	found, err := exec.LookPath(requested[0])
-	if err != nil {
-		return nil, agentSetup{}, fmt.Errorf("command not found: %s", requested[0])
-	}
-	absolute, err := filepath.Abs(found)
-	if err != nil {
-		return nil, agentSetup{}, err
-	}
-	resolved, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
-		return nil, agentSetup{}, err
-	}
-	for _, prefix := range []string{"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"} {
-		if strings.HasPrefix(resolved, prefix) {
-			return append([]string(nil), requested...), agentSetup{}, nil
-		}
-	}
-	if adapter != nil && adapter.resolveExternalCommand != nil {
-		return adapter.resolveExternalCommand(context, requested, resolved)
-	}
-	command := append([]string{"/run/bwrap-agent/command"}, requested[1:]...)
-	return command, agentSetup{Mounts: []resourceMount{{Source: resolved, Destination: "/run/bwrap-agent/command", Executable: true}}}, nil
-}
-
 func openInjectedFile(path string) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -548,7 +523,11 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	if err != nil {
 		return LaunchPlan{}, err
 	}
-	command, commandSetup, err := resolveCommand(host, opts.Command, adapter)
+	var resolveExternal externalCommandResolver
+	if adapter != nil {
+		resolveExternal = adapter.resolveExternalCommand
+	}
+	command, err := resolveCommand(host, opts.Command, resolveExternal)
 	if err != nil {
 		return LaunchPlan{}, err
 	}
@@ -573,7 +552,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	input := environmentInputs{
 		hostEnv: hostEnv, identity: identity, defaultAccount: accountName, hostAccount: hostAccount,
 		podman: podmanBin != "", storageConfig: storageConfig, containersConfig: containersConfig,
-		agent: agent.Environment, command: commandSetup.Environment,
+		agent: agent.Environment, command: command.Environment,
 	}
 	environment, err := buildSandboxEnvironment(opts, input)
 	if err != nil {
@@ -606,7 +585,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		bwrap: bwrapBin, podman: podmanBin != "", usePTY: usePTY,
 		generated: generated, generatedEtc: generatedEtc, passwdHomeAliased: passwdHomeAliased,
 		gitMounts: gitConfig, agentMounts: agent.Mounts, podmanMount: podmanMount,
-		commandMounts: commandSetup.Mounts,
+		commandMounts: command.Mounts,
 	})
 	if err != nil {
 		return LaunchPlan{}, err
@@ -640,7 +619,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		initMode = internalPodmanInitMode
 	}
 	bwrap = append(bwrap, "--hostname", sandboxHostname, "--chdir", project, "/run/bwrap-agent/init", initMode)
-	bwrap = append(bwrap, command...)
+	bwrap = append(bwrap, command.Argv...)
 	if opts.Network == "none" {
 		bwrap = append([]string{bwrap[0], "--unshare-net"}, bwrap[1:]...)
 	}
@@ -666,7 +645,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	return LaunchPlan{Clipboard: clipboardMode, clipboardBridge: clipboardConfig, Instance: instance, Project: project, State: state, WorkspaceMode: workspaceMode,
 		Landlock: landlockStatus, Seccomp: seccompStatus, Bubblewrap: bwrapInfo.BubblewrapStatus,
 		NetworkAllow: append([]string{}, opts.NetworkAllow...), ProxyGuestPort: proxyPort,
-		Command: command, outer: outerCommand{podman: podmanBin, pasta: pastaBin},
+		Command: command.Argv, outer: outerCommand{podman: podmanBin, pasta: pastaBin},
 		Launcher: launcher,
 		Bwrap:    bwrap, Ports: ports, LaunchEnv: launchEnv,
 		TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: layout.protectedPaths,
