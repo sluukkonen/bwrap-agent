@@ -6,15 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -351,18 +348,17 @@ func sandboxRuntime(argv []string, podmanEnabled bool) int {
 			return 70
 		}
 	}
-	var socket *podmanSocket
-	var service *managedProcess
+	var podman *podmanRuntime
 	if podmanEnabled {
 		var err error
-		socket, err = newPodmanSocket(filepath.Join(sandboxRuntimeDirectory, "podman", "podman.sock"))
+		podman, err = newPodmanRuntime(filepath.Join(sandboxRuntimeDirectory, "podman", "podman.sock"))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "bwrap-agent: Podman API socket failed to initialize: %v\n", err)
 			return 70
 		}
-		defer socket.Close()
-		_ = os.Setenv("DOCKER_HOST", "unix://"+socket.path)
-		_ = os.Setenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", socket.path)
+		defer podman.Close()
+		_ = os.Setenv("DOCKER_HOST", "unix://"+podman.path)
+		_ = os.Setenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", podman.path)
 	}
 	if len(landlockWrites) > 0 {
 		if err := applyLandlock(landlockWrites); err != nil {
@@ -385,9 +381,11 @@ func sandboxRuntime(argv []string, podmanEnabled bool) int {
 	command.Env = os.Environ()
 	signals := make(chan os.Signal, 8)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer podman.Finish()
+	defer signal.Stop(signals)
 	if err := command.Start(); err != nil {
 		signal.Stop(signals)
-		cleanupPodman(podmanEnabled, service)
+		_ = podman.Finish()
 		fmt.Fprintf(os.Stderr, "bwrap-agent: failed to launch: %v\n", err)
 		return launchErrorCode(err)
 	}
@@ -395,220 +393,16 @@ func sandboxRuntime(argv []string, podmanEnabled bool) int {
 	go func() {
 		commandDone <- command.Wait()
 	}()
-	var activation <-chan struct{}
-	if socket != nil {
-		activation = socket.activation
-	}
 	for {
 		select {
 		case received := <-signals:
 			_ = command.Process.Signal(received)
-		case <-activation:
-			activation = nil
-			var err error
-			service, err = startPodmanService(socket.listener)
-			if err != nil {
+		case <-podman.Activation():
+			if err := podman.Activate(); err != nil {
 				fmt.Fprintf(os.Stderr, "bwrap-agent: Podman API service failed to activate: %v\n", err)
-				socket.Close()
-				socket = nil
-				continue
 			}
-			socket.handoff()
 		case err := <-commandDone:
-			signal.Stop(signals)
-			cleanupPodman(podmanEnabled, service)
 			return exitStatus(err)
 		}
-	}
-}
-
-type podmanSocket struct {
-	path       string
-	listener   *os.File
-	wakeRead   *os.File
-	wakeWrite  *os.File
-	activation chan struct{}
-	watchDone  chan struct{}
-}
-
-func newPodmanSocket(path string) (*podmanSocket, error) {
-	if path == "" || !filepath.IsAbs(path) {
-		return nil, errors.New("Podman API socket path must be absolute")
-	}
-	directory := filepath.Dir(path)
-	if err := secureMkdir(directory, 0o700); err != nil {
-		return nil, err
-	}
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSocket == 0 && info.Mode()&os.ModeSymlink == 0 {
-			return nil, fmt.Errorf("refusing to replace non-socket path: %s", path)
-		}
-		if err := os.Remove(path); err != nil {
-			return nil, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
-	if err != nil {
-		return nil, err
-	}
-	listener.SetUnlinkOnClose(false)
-	if err := os.Chmod(path, 0o600); err != nil {
-		listener.Close()
-		os.Remove(path)
-		return nil, err
-	}
-	listenerFile, err := listener.File()
-	if err != nil {
-		listener.Close()
-		os.Remove(path)
-		return nil, err
-	}
-	if err := listener.Close(); err != nil {
-		listenerFile.Close()
-		os.Remove(path)
-		return nil, err
-	}
-	wakeRead, wakeWrite, err := os.Pipe()
-	if err != nil {
-		listenerFile.Close()
-		os.Remove(path)
-		return nil, err
-	}
-	socket := &podmanSocket{
-		path: path, listener: listenerFile, wakeRead: wakeRead, wakeWrite: wakeWrite,
-		activation: make(chan struct{}), watchDone: make(chan struct{}),
-	}
-	go socket.watch()
-	return socket, nil
-}
-
-func (socket *podmanSocket) watch() {
-	defer close(socket.watchDone)
-	poll := []unix.PollFd{
-		{Fd: int32(socket.listener.Fd()), Events: unix.POLLIN},
-		{Fd: int32(socket.wakeRead.Fd()), Events: unix.POLLIN},
-	}
-	for {
-		if _, err := unix.Poll(poll, -1); err != nil {
-			if errors.Is(err, unix.EINTR) {
-				continue
-			}
-			return
-		}
-		if poll[1].Revents != 0 {
-			return
-		}
-		if poll[0].Revents&(unix.POLLIN|unix.POLLHUP|unix.POLLERR) != 0 {
-			close(socket.activation)
-			return
-		}
-	}
-}
-
-func (socket *podmanSocket) stopWatcher() {
-	if socket == nil || socket.wakeWrite == nil {
-		return
-	}
-	select {
-	case <-socket.watchDone:
-	default:
-		_, _ = socket.wakeWrite.Write([]byte{1})
-		<-socket.watchDone
-	}
-	socket.wakeRead.Close()
-	socket.wakeWrite.Close()
-	socket.wakeRead, socket.wakeWrite = nil, nil
-}
-
-func (socket *podmanSocket) handoff() {
-	socket.stopWatcher()
-	if socket.listener != nil {
-		socket.listener.Close()
-		socket.listener = nil
-	}
-}
-
-func (socket *podmanSocket) Close() error {
-	if socket == nil {
-		return nil
-	}
-	socket.handoff()
-	err := os.Remove(socket.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
-}
-
-func startPodmanService(listener *os.File) (*managedProcess, error) {
-	if listener == nil {
-		return nil, errors.New("Podman API listener is closed")
-	}
-	command := exec.Command("/run/bwrap-agent/init", internalPodmanServiceMode)
-	command.ExtraFiles = []*os.File{listener}
-	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	command.Stdout, command.Stderr = os.Stdout, os.Stderr
-	if err := command.Start(); err != nil {
-		return nil, err
-	}
-	service := &managedProcess{command: command, done: make(chan struct{})}
-	go func() {
-		_ = command.Wait()
-		close(service.done)
-	}()
-	return service, nil
-}
-
-// Internal Podman processes use the private runtime directory even when the
-// target command overrides or unsets XDG_RUNTIME_DIR.
-func sandboxPodmanEnvironment(environment []string) []string {
-	environment = withoutEnvironment(environment, "CONTAINER_HOST", "CONTAINER_CONNECTION", "XDG_RUNTIME_DIR")
-	return append(environment, "XDG_RUNTIME_DIR="+sandboxRuntimeDirectory)
-}
-
-func podmanServiceExec() int {
-	podman, err := exec.LookPath("podman")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: Podman API service executable not found: %v\n", err)
-		return 70
-	}
-	_ = os.Setenv("LISTEN_PID", fmt.Sprintf("%d", os.Getpid()))
-	_ = os.Setenv("LISTEN_FDS", "1")
-	_ = os.Setenv("LISTEN_FDNAMES", "podman.socket")
-	environment := sandboxPodmanEnvironment(os.Environ())
-	if err := unix.Exec(podman, []string{"podman", "system", "service", "--time=0"}, environment); err != nil {
-		fmt.Fprintf(os.Stderr, "bwrap-agent: Podman API service failed to exec: %v\n", err)
-		return 70
-	}
-	return 0
-}
-
-type managedProcess struct {
-	command *exec.Cmd
-	done    chan struct{}
-}
-
-func cleanupPodman(enabled bool, service *managedProcess) {
-	if enabled {
-		stop := exec.Command("podman", "stop", "--all", "--ignore", "--time", "3")
-		stop.Stdout, stop.Stderr = io.Discard, io.Discard
-		stop.Env = sandboxPodmanEnvironment(os.Environ())
-		_ = stop.Run()
-	}
-	stopService(service)
-}
-
-func stopService(service *managedProcess) {
-	if service == nil || service.command.Process == nil {
-		return
-	}
-	_ = service.command.Process.Signal(syscall.SIGTERM)
-	select {
-	case <-service.done:
-	case <-time.After(2 * time.Second):
-		_ = service.command.Process.Kill()
-		<-service.done
 	}
 }
