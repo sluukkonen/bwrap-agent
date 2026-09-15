@@ -309,20 +309,6 @@ func resolveSeccompMode(mode string) (string, error) {
 	return mode, nil
 }
 
-func terminalEnv(source []string) map[string]string {
-	selected := map[string]string{}
-	for _, assignment := range source {
-		name, value, found := strings.Cut(assignment, "=")
-		if !found || strings.ContainsRune(name, 0) || strings.ContainsRune(value, 0) {
-			continue
-		}
-		if terminalEnvironment[name] || strings.HasPrefix(name, "LC_") || strings.HasPrefix(name, "OPENTUI_") {
-			selected[name] = value
-		}
-	}
-	return selected
-}
-
 func envValue(source []string, name, fallback string) string {
 	for _, assignment := range source {
 		key, value, found := strings.Cut(assignment, "=")
@@ -511,6 +497,7 @@ func BuildPlan(opts Options) (LaunchPlan, error) {
 }
 
 func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resultErr error) {
+	hostEnv := os.Environ()
 	generated, err := preparePrivateFiles(identity)
 	if err != nil {
 		return LaunchPlan{}, err
@@ -576,7 +563,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	}
 	var storageConfig, containersConfig, hostAccount string
 	if podmanBin != "" {
-		hostAccount, err = hostAccountName(os.Environ())
+		hostAccount, err = hostAccountName(hostEnv)
 		if err != nil {
 			return LaunchPlan{}, err
 		}
@@ -619,7 +606,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		}
 	}
 	adapter := detectAgent(opts.Command[0])
-	host := hostContext{state: state, hostEnv: os.Environ(), sources: newHostSourcePolicy(identity)}
+	host := hostContext{state: state, hostEnv: hostEnv, sources: newHostSourcePolicy(identity)}
 	gitConfig, err := prepareGitConfigMounts(host, !opts.NoGitConfig)
 	if err != nil {
 		return LaunchPlan{}, err
@@ -662,71 +649,15 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	}
 
 	accountName, _ := currentAccount()
-	environment := map[string]string{
-		"HOME": filepath.Join(state, "home"), "USER": envValue(os.Environ(), "USER", accountName),
-		"LOGNAME":         envValue(os.Environ(), "LOGNAME", envValue(os.Environ(), "USER", accountName)),
-		"PATH":            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"XDG_CONFIG_HOME": filepath.Join(state, "config"), "XDG_CACHE_HOME": filepath.Join(state, "home", ".cache"),
-		"XDG_DATA_HOME": filepath.Join(state, "data"), "XDG_STATE_HOME": filepath.Join(state, "home", ".local", "state"),
-		"XDG_RUNTIME_DIR": sandboxRuntimeDirectory, "TMPDIR": filepath.Join(state, "tmp"),
-		"BWRAP_AGENT_INSTANCE": instance,
+	input := environmentInputs{
+		hostEnv: hostEnv, identity: identity, defaultAccount: accountName, hostAccount: hostAccount,
+		podman: podmanBin != "", storageConfig: storageConfig, containersConfig: containersConfig,
+		agent: agent.Environment, command: commandSetup.Environment,
 	}
-	if opts.Network == "private" {
-		proxyURL := fmt.Sprintf("http://127.0.0.1:%d", proxyGuestPort)
-		environment["HTTP_PROXY"], environment["http_proxy"] = proxyURL, proxyURL
-		environment["HTTPS_PROXY"], environment["https_proxy"] = proxyURL, proxyURL
-		environment["NO_PROXY"], environment["no_proxy"] = "localhost,127.0.0.1,::1", "localhost,127.0.0.1,::1"
+	environment, err := buildSandboxEnvironment(opts, input)
+	if err != nil {
+		return LaunchPlan{}, err
 	}
-	if workspaceMode == "read-only" {
-		environment["GIT_OPTIONAL_LOCKS"] = "0"
-	}
-	for name, value := range terminalEnv(os.Environ()) {
-		environment[name] = value
-	}
-	for name, value := range agent.Environment {
-		environment[name] = value
-	}
-	for name, value := range commandSetup.Environment {
-		environment[name] = value
-	}
-	for _, inherited := range []string{"LANG", "TZ"} {
-		if value, found := os.LookupEnv(inherited); found {
-			environment[inherited] = value
-		}
-	}
-	for _, assignment := range opts.Env {
-		name, value, found := strings.Cut(assignment, "=")
-		if !found || name == "" || strings.ContainsRune(value, 0) {
-			return LaunchPlan{}, fmt.Errorf("invalid --env assignment: %q", assignment)
-		}
-		environment[name] = value
-	}
-	for _, name := range opts.UnsetEnv {
-		if name == "" || strings.Contains(name, "=") || strings.ContainsRune(name, 0) {
-			return LaunchPlan{}, fmt.Errorf("invalid --unsetenv name: %q", name)
-		}
-		delete(environment, name)
-	}
-	// This launcher-owned status value must reflect the resolved plan. Runtime
-	// security and cleanup use an internal command mode rather than trusting it.
-	environment["BWRAP_AGENT_PODMAN"] = boolString(podmanBin != "")
-	if podmanBin != "" {
-		// The outer podman-unshare supervisor keeps the user and mount namespace
-		// alive for the full launch, so neither it nor nested Podman commands
-		// need a persistent pause process.
-		environment["PODMAN_NO_PAUSE_PROCESS"] = "1"
-		// These paths belong to the instance, regardless of host or --env settings.
-		delete(environment, "CONTAINERS_CONF")
-		environment["CONTAINERS_CONF_OVERRIDE"] = containersConfig
-		environment["CONTAINERS_STORAGE_CONF"] = storageConfig
-		// podman unshare exports its store paths; these are bootstrap-only.
-		delete(environment, "CONTAINERS_GRAPHROOT")
-		delete(environment, "CONTAINERS_RUNROOT")
-	}
-	// Never accept a policy payload from configuration or the host environment.
-	// Enabled Landlock replaces it below with a launcher-generated allowlist;
-	// otherwise the sandbox runtime must not see this internal control value.
-	delete(environment, internalLandlockEnvironment)
 	if landlockStatus.Effective == "enabled" {
 		hostWritePaths := []string{state}
 		hostWritePaths = append(hostWritePaths, identity.RWBind...)
@@ -931,17 +862,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		bwrap = append([]string{bwrap[0], "--unshare-net"}, bwrap[1:]...)
 	}
 
-	launchEnv := cloneMap(environment)
-	// Podman uses USER to look up subordinate IDs before entering its user
-	// namespace. Sandbox overrides must not change the invoking account.
-	if podmanBin != "" {
-		launchEnv["USER"], launchEnv["LOGNAME"] = hostAccount, hostAccount
-		launchEnv["PATH"] = os.Getenv("PATH")
-		launchEnv = podmanBootstrapEnvironment(launchEnv, podmanBootstrapPlaceholder)
-	} else {
-		// Only the sandbox needs this private path; pasta runs on the host.
-		delete(launchEnv, "XDG_RUNTIME_DIR")
-	}
+	launchEnv := buildLauncherEnvironment(environment, input)
 	proxyPort := 0
 	if opts.Network == "private" {
 		proxyPort = proxyGuestPort
