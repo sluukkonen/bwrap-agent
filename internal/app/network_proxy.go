@@ -26,7 +26,10 @@ type networkProxy struct {
 	dns         *dnsProxy
 	server      *http.Server
 	transport   *http.Transport
+	cancel      context.CancelFunc
 	mu          sync.Mutex
+	closing     bool
+	tunnels     sync.WaitGroup
 	connections map[net.Conn]struct{}
 	closeOnce   sync.Once
 	done        chan struct{}
@@ -70,7 +73,8 @@ func startNetworkProxyWithDial(policy networkPolicy, dial proxyDialer) (*network
 		_ = listener.Close()
 		return nil, err
 	}
-	proxy := &networkProxy{listener: listener, dns: dns, connections: map[net.Conn]struct{}{}, done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	proxy := &networkProxy{cancel: cancel, listener: listener, dns: dns, connections: map[net.Conn]struct{}{}, done: make(chan struct{})}
 	proxy.transport = &http.Transport{
 		Proxy:                 nil,
 		DialContext:           dial,
@@ -80,6 +84,7 @@ func startNetworkProxyWithDial(policy networkPolicy, dial proxyDialer) (*network
 		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 	proxy.server = &http.Server{
+		BaseContext:       func(net.Listener) context.Context { return ctx },
 		Handler:           &networkProxyHandler{policy: policy, dial: dial, transport: proxy.transport, owner: proxy},
 		ReadHeaderTimeout: 15 * time.Second,
 		IdleTimeout:       90 * time.Second,
@@ -99,10 +104,28 @@ func (proxy *networkProxy) dnsPort() int {
 	return proxy.dns.tcp.Addr().(*net.TCPAddr).Port
 }
 
-func (proxy *networkProxy) track(connection net.Conn) {
+// beginTunnel serializes admission with shutdown so no WaitGroup additions can
+// race with Close waiting for the last admitted handler.
+func (proxy *networkProxy) beginTunnel() bool {
 	proxy.mu.Lock()
+	defer proxy.mu.Unlock()
+	if proxy.closing {
+		return false
+	}
+	proxy.tunnels.Add(1)
+	return true
+}
+
+func (proxy *networkProxy) track(connection net.Conn) bool {
+	proxy.mu.Lock()
+	if proxy.closing {
+		proxy.mu.Unlock()
+		_ = connection.Close()
+		return false
+	}
 	proxy.connections[connection] = struct{}{}
 	proxy.mu.Unlock()
+	return true
 }
 
 func (proxy *networkProxy) untrack(connection net.Conn) {
@@ -117,18 +140,23 @@ func (proxy *networkProxy) Close() error {
 	}
 	var result error
 	proxy.closeOnce.Do(func() {
+		proxy.mu.Lock()
+		proxy.closing = true
+		connections := proxy.connections
+		proxy.connections = nil
+		proxy.mu.Unlock()
+		proxy.cancel()
+		for connection := range connections {
+			_ = connection.Close()
+		}
 		serverErr := proxy.server.Close()
 		if errors.Is(serverErr, http.ErrServerClosed) {
 			serverErr = nil
 		}
 		result = errors.Join(serverErr, proxy.dns.Close())
 		proxy.transport.CloseIdleConnections()
-		proxy.mu.Lock()
-		for connection := range proxy.connections {
-			_ = connection.Close()
-		}
-		proxy.mu.Unlock()
 		<-proxy.done
+		proxy.tunnels.Wait()
 	})
 	return result
 }
@@ -445,11 +473,18 @@ func (handler *networkProxyHandler) connect(response http.ResponseWriter, reques
 		http.Error(response, "CONNECT is unavailable", http.StatusInternalServerError)
 		return
 	}
+	if !handler.owner.beginTunnel() {
+		http.Error(response, "bwrap-agent proxy is closing", http.StatusServiceUnavailable)
+		return
+	}
+	defer handler.owner.tunnels.Done()
 	client, buffered, err := hijacker.Hijack()
 	if err != nil {
 		return
 	}
-	handler.owner.track(client)
+	if !handler.owner.track(client) {
+		return
+	}
 	defer func() {
 		handler.owner.untrack(client)
 		_ = client.Close()
@@ -467,7 +502,9 @@ func (handler *networkProxyHandler) connect(response http.ResponseWriter, reques
 	if err != nil {
 		return
 	}
-	handler.owner.track(upstream)
+	if !handler.owner.track(upstream) {
+		return
+	}
 	defer func() {
 		handler.owner.untrack(upstream)
 		_ = upstream.Close()
