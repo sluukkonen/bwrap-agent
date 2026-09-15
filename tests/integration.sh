@@ -757,7 +757,10 @@ if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
     mv "$container_instance" "$interrupted_tombstone"
     mkdir "$interrupted_tombstone/.podman-cleanup-interrupted"
     printf 'stale cleanup state\n' >"$interrupted_tombstone/.podman-cleanup-interrupted/probe"
-    delete_output=$(XDG_RUNTIME_DIR="$unusable_runtime" XDG_CONFIG_HOME="$unusable_xdg" \
+    delete_output=$(HOME="$unusable_runtime" TMPDIR="$unusable_runtime" \
+        XDG_DATA_HOME="$unusable_runtime" XDG_CACHE_HOME="$unusable_runtime" XDG_STATE_HOME="$unusable_runtime" \
+        CONTAINERS_CONF_MODULES=invalid CONTAINERS_GRAPHROOT="$unusable_runtime" CONTAINERS_RUNROOT="$unusable_runtime" \
+        XDG_RUNTIME_DIR="$unusable_runtime" XDG_CONFIG_HOME="$unusable_xdg" \
         CONTAINERS_STORAGE_CONF="$unusable_runtime" CONTAINERS_CONF="$unusable_runtime" \
         STORAGE_DRIVER=invalid STORAGE_OPTS=invalid PODMAN_NO_PAUSE_PROCESS=0 \
         "$binary" instance delete integration-containers --yes)

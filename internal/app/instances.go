@@ -640,15 +640,19 @@ func tombstoneNeedsPodmanCleanup(tombstone string) (bool, error) {
 	return false, nil
 }
 
-func podmanCleanupEnvironment(environment []string, accountName, runtime, storageConfig, containersConfig string) []string {
-	environment = withoutEnvironment(environment, "CONTAINER_HOST", "CONTAINER_CONNECTION", "DOCKER_HOST",
-		"CONTAINERS_STORAGE_CONF", "CONTAINERS_CONF", "CONTAINERS_CONF_OVERRIDE", "_CONTAINERS_USERNS_CONFIGURED",
-		"STORAGE_DRIVER", "STORAGE_OPTS", "XDG_RUNTIME_DIR", "PODMAN_NO_PAUSE_PROCESS", "USER", "LOGNAME")
-	return append(environment, "USER="+accountName, "LOGNAME="+accountName, "XDG_RUNTIME_DIR="+runtime, "CONTAINERS_STORAGE_CONF="+storageConfig,
-		"CONTAINERS_CONF="+containersConfig, "PODMAN_NO_PAUSE_PROCESS=1")
+func podmanCleanupEnvironment(environment []string, accountName, root string) []string {
+	values := make(map[string]string)
+	for _, assignment := range environment {
+		if name, value, found := strings.Cut(assignment, "="); found {
+			values[name] = value
+		}
+	}
+	values = podmanBootstrapEnvironment(values, root)
+	values["USER"], values["LOGNAME"] = accountName, accountName
+	return environmentList(values)
 }
 
-func withPodmanCleanupState(tombstone string, action func(runtime, storageConfig, containersConfig string, targets []string) error) (result error) {
+func withPodmanCleanupState(tombstone string, action func(root string, targets []string) error) (result error) {
 	store := filepath.Dir(tombstone)
 	if filepath.Base(store) != "instances" {
 		return fmt.Errorf("invalid instance tombstone path: %s", tombstone)
@@ -670,30 +674,10 @@ func withPodmanCleanupState(tombstone string, action func(runtime, storageConfig
 			result = errors.Join(result, fmt.Errorf("remove Podman cleanup state: %w", err))
 		}
 	}()
-	runtime, err := ensureStateDirectory(cleanup, "runtime", 0o700)
-	if err != nil {
+	if err := preparePodmanBootstrap(cleanup); err != nil {
 		return err
 	}
-	graphRoot, err := ensureStateDirectory(cleanup, "storage", 0o700)
-	if err != nil {
-		return err
-	}
-	runRoot, err := ensureStateDirectory(cleanup, "runroot", 0o700)
-	if err != nil {
-		return err
-	}
-	graphJSON, _ := json.Marshal(graphRoot)
-	runJSON, _ := json.Marshal(runRoot)
-	content := fmt.Sprintf("[storage]\ndriver = \"vfs\"\ngraphroot = %s\nrunroot = %s\n", graphJSON, runJSON)
-	storageConfig, err := writeStateFile(cleanup, "storage.conf", []byte(content), 0o600)
-	if err != nil {
-		return err
-	}
-	containersConfig, err := writeStateFile(cleanup, "containers.conf", []byte("[engine]\ncgroup_manager = \"cgroupfs\"\nevents_logger = \"file\"\n"), 0o600)
-	if err != nil {
-		return err
-	}
-	return action(runtime, storageConfig, containersConfig, targets)
+	return action(cleanup, targets)
 }
 
 func podmanUnshareRemove(path string) error {
@@ -710,10 +694,10 @@ func podmanUnshareRemove(path string) error {
 	if err != nil {
 		return fmt.Errorf("rm is required to remove rootless container storage: %w", err)
 	}
-	return withPodmanCleanupState(path, func(runtime, storageConfig, containersConfig string, targets []string) error {
+	return withPodmanCleanupState(path, func(root string, targets []string) error {
 		arguments := append([]string{"unshare", remove, "-rf", "--"}, targets...)
 		command := exec.Command(podman, arguments...)
-		command.Env = podmanCleanupEnvironment(environment, accountName, runtime, storageConfig, containersConfig)
+		command.Env = podmanCleanupEnvironment(environment, accountName, root)
 		output, err := command.CombinedOutput()
 		if err != nil {
 			message := strings.TrimSpace(string(output))

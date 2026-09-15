@@ -4,6 +4,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,11 @@ import (
 )
 
 func TestPodmanBootstrapIsolation(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	temporary := filepath.Join(t.TempDir(), "quotes\" and \\slashes")
+	if err := os.Mkdir(temporary, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", temporary)
 	environment := map[string]string{
 		"HOME": "/persistent/home", "XDG_DATA_HOME": "/persistent/data",
 		"CONTAINERS_CONF": "/host/config", "CONTAINERS_STORAGE_CONF": "/host/storage",
@@ -29,6 +34,7 @@ func TestPodmanBootstrapIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = removePodmanBootstrap(first) })
+	assertPodmanBootstrap(t, first)
 	second, _, err := createPodmanBootstrap(environment, instanceIdentity{})
 	if err != nil {
 		t.Fatal(err)
@@ -180,5 +186,72 @@ func TestPodmanBootstrapPlanBoundary(t *testing.T) {
 	}
 	if strings.Contains(joined, podmanBootstrapPlaceholder) {
 		t.Fatal("bootstrap paths entered sandbox arguments")
+	}
+}
+
+func assertPodmanBootstrap(t *testing.T, root string) {
+	t.Helper()
+	for _, relative := range []string{".", "home", "config", "data", "cache", "state", "run", "tmp", "storage", "run/containers", "run/libpod/tmp"} {
+		info, err := os.Stat(filepath.Join(root, relative))
+		if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
+			t.Fatalf("bootstrap directory %s: %v, %v", relative, info, err)
+		}
+	}
+	for _, name := range []string{"storage.conf", "containers.conf"} {
+		path := filepath.Join(root, name)
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+			t.Fatalf("bootstrap file %s: %v, %v", name, info, err)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var config map[string]map[string]any
+		if err := toml.Unmarshal(content, &config); err != nil {
+			t.Fatal(err)
+		}
+		expected := map[string]any{"driver": "vfs", "graphroot": filepath.Join(root, "storage"), "runroot": filepath.Join(root, "run/containers")}
+		section := "storage"
+		if name == "containers.conf" {
+			section = "engine"
+			expected = map[string]any{"cgroup_manager": "cgroupfs", "events_logger": "file", "remote": false, "tmp_dir": filepath.Join(root, "run/libpod/tmp"), "static_dir": filepath.Join(root, "storage/libpod"), "volume_path": filepath.Join(root, "storage/volumes")}
+		}
+		for key, want := range expected {
+			if got := config[section][key]; got != want {
+				t.Errorf("%s %s = %v; want %v", name, key, got, want)
+			}
+		}
+	}
+}
+
+func TestPreparePodmanBootstrapFailure(t *testing.T) {
+	for _, blocked := range []string{"home", "storage.conf", "containers.conf"} {
+		t.Run(blocked, func(t *testing.T) {
+			root, outside := t.TempDir(), t.TempDir()
+			marker := filepath.Join(outside, "keep")
+			if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if blocked == "home" {
+				if err := os.Symlink(outside, filepath.Join(root, blocked)); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Mkdir(filepath.Join(root, blocked), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := preparePodmanBootstrap(root); err == nil {
+				t.Fatal("accepted unsafe bootstrap destination")
+			}
+			if err := removePodmanBootstrap(root); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("partial preparation remains: %v", err)
+			}
+			if content, err := os.ReadFile(marker); err != nil || string(content) != "keep" {
+				t.Fatalf("modified outside path: %q, %v", content, err)
+			}
+		})
 	}
 }

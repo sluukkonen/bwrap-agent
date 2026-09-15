@@ -254,7 +254,10 @@ func TestInterruptedCleanupStateStillRequiresPodman(t *testing.T) {
 func TestPodmanCleanupEnvironmentOwnsRuntimeDirectory(t *testing.T) {
 	const account = "nss-user"
 	environment := podmanCleanupEnvironment([]string{
-		"PATH=/usr/bin",
+		"PATH=/usr/bin", "UNRELATED=value=with=equals",
+		"HOME=/host", "HOME=/other", "XDG_CONFIG_HOME=/host/config", "XDG_DATA_HOME=/host/data", "XDG_CACHE_HOME=/host/cache", "XDG_STATE_HOME=/host/state", "TMPDIR=/host/tmp",
+		"CONTAINERS_CONF_MODULES=host-module", "CONTAINERS_GRAPHROOT=/host/graph", "CONTAINERS_RUNROOT=/host/run",
+		"CONTAINERS_CONF_OVERRIDE=/host/override", "CONTAINER_CONNECTION=remote", "DOCKER_HOST=unix:///host.sock", "_CONTAINERS_USERNS_CONFIGURED=done",
 		"USER=wrong", "LOGNAME=wrong",
 		"XDG_RUNTIME_DIR=/unusable",
 		"CONTAINER_HOST=tcp://untrusted",
@@ -262,14 +265,37 @@ func TestPodmanCleanupEnvironmentOwnsRuntimeDirectory(t *testing.T) {
 		"STORAGE_DRIVER=overlay",
 		"STORAGE_OPTS=overlay.mount_program=/untrusted",
 		"PODMAN_NO_PAUSE_PROCESS=0",
-	}, account, "/trusted/runtime", "/trusted/storage.conf", "/trusted/containers.conf")
+	}, account, "/trusted")
+	for name, relative := range podmanBootstrapPaths() {
+		count := 0
+		for _, assignment := range environment {
+			key, value, _ := strings.Cut(assignment, "=")
+			if key == name {
+				count++
+				if value != filepath.Join("/trusted", relative) {
+					t.Errorf("%s = %s", key, value)
+				}
+			}
+		}
+		if count != 1 {
+			t.Errorf("%s appears %d times", name, count)
+		}
+	}
+	for _, key := range []string{"CONTAINERS_CONF_MODULES", "CONTAINERS_GRAPHROOT", "CONTAINERS_RUNROOT", "CONTAINERS_CONF_OVERRIDE", "CONTAINER_CONNECTION", "DOCKER_HOST", "_CONTAINERS_USERNS_CONFIGURED"} {
+		if _, found := hostEnvValue(environment, key); found {
+			t.Errorf("cleanup retained %s", key)
+		}
+	}
+	if value, _ := hostEnvValue(environment, "UNRELATED"); value != "value=with=equals" {
+		t.Fatal("lost unrelated assignment")
+	}
 	joined := strings.Join(environment, "\n")
 	for _, key := range []string{"USER", "LOGNAME"} {
 		if strings.Count(joined, key+"=") != 1 || !strings.Contains(joined, key+"="+account) {
 			t.Fatalf("cleanup account environment = %#v", environment)
 		}
 	}
-	if strings.Count(joined, "XDG_RUNTIME_DIR=") != 1 || !strings.Contains(joined, "XDG_RUNTIME_DIR=/trusted/runtime") {
+	if strings.Count(joined, "XDG_RUNTIME_DIR=") != 1 || !strings.Contains(joined, "XDG_RUNTIME_DIR=/trusted/run") {
 		t.Fatalf("cleanup runtime environment = %#v", environment)
 	}
 	if strings.Count(joined, "CONTAINERS_STORAGE_CONF=") != 1 || !strings.Contains(joined, "CONTAINERS_STORAGE_CONF=/trusted/storage.conf") {
@@ -302,8 +328,8 @@ func TestPodmanCleanupStateIsPrivateIsolatedAndTemporary(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
-			store := filepath.Join(root, "instances")
-			if err := os.Mkdir(store, 0o700); err != nil {
+			store := filepath.Join(root, "quoted\" \\parent", "instances")
+			if err := os.MkdirAll(store, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			tombstone := filepath.Join(store, ".deleting-example-0123456789abcdef")
@@ -315,28 +341,9 @@ func TestPodmanCleanupStateIsPrivateIsolatedAndTemporary(t *testing.T) {
 				t.Fatal(err)
 			}
 			var cleanup string
-			err := withPodmanCleanupState(tombstone, func(runtime, storageConfig, containersConfig string, targets []string) error {
-				cleanup = filepath.Dir(runtime)
-				info, err := os.Stat(runtime)
-				if err != nil {
-					return err
-				}
-				if !info.IsDir() || info.Mode().Perm() != 0o700 {
-					return fmt.Errorf("runtime mode = %v", info.Mode())
-				}
-				content, err := os.ReadFile(storageConfig)
-				if err != nil {
-					return err
-				}
-				configuration := string(content)
-				for _, expected := range []string{`driver = "vfs"`, filepath.Join(cleanup, "storage"), filepath.Join(cleanup, "runroot")} {
-					if !strings.Contains(configuration, expected) {
-						return fmt.Errorf("storage configuration %q does not contain %q", configuration, expected)
-					}
-				}
-				if content, err := os.ReadFile(containersConfig); err != nil || !strings.Contains(string(content), `events_logger = "file"`) {
-					return fmt.Errorf("containers configuration = %q, %v", content, err)
-				}
+			err := withPodmanCleanupState(tombstone, func(root string, targets []string) error {
+				cleanup = root
+				assertPodmanBootstrap(t, root)
 				if len(targets) != 1 || targets[0] != staleCleanup {
 					return fmt.Errorf("cleanup targets = %#v", targets)
 				}

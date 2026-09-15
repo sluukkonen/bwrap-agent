@@ -70,9 +70,18 @@ func createPodmanBootstrap(environment map[string]string, identity instanceIdent
 			err = errors.Join(err, removePodmanBootstrap(root))
 		}
 	}()
+	if err = preparePodmanBootstrap(root); err != nil {
+		return root, nil, err
+	}
+	return root, podmanBootstrapEnvironment(environment, root), nil
+}
+
+// preparePodmanBootstrap populates a caller-owned disposable directory.
+// Allocation, placement validation, and cleanup remain with the caller.
+func preparePodmanBootstrap(root string) error {
 	for _, relative := range []string{"home", "config", "data", "cache", "state", "run", "tmp", "storage", "run/containers", "run/libpod/tmp"} {
-		if _, err = ensureStateDirectory(root, relative, 0o700); err != nil {
-			return root, nil, fmt.Errorf("prepare Podman bootstrap: %w", err)
+		if _, err := ensureStateDirectory(root, relative, 0o700); err != nil {
+			return fmt.Errorf("prepare Podman bootstrap: %w", err)
 		}
 	}
 	configs := map[string]any{
@@ -88,13 +97,13 @@ func createPodmanBootstrap(environment map[string]string, identity instanceIdent
 	for name, config := range configs {
 		content, encodeErr := toml.Marshal(config)
 		if encodeErr != nil {
-			return root, nil, fmt.Errorf("encode Podman bootstrap configuration: %w", encodeErr)
+			return fmt.Errorf("encode Podman bootstrap configuration: %w", encodeErr)
 		}
-		if _, err = writeStateFile(root, name, content, 0o600); err != nil {
-			return root, nil, fmt.Errorf("write Podman bootstrap configuration: %w", err)
+		if _, err := writeStateFile(root, name, content, 0o600); err != nil {
+			return fmt.Errorf("write Podman bootstrap configuration: %w", err)
 		}
 	}
-	return root, podmanBootstrapEnvironment(environment, root), nil
+	return nil
 }
 
 func removePodmanBootstrap(root string) error {
