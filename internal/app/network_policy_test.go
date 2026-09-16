@@ -122,6 +122,10 @@ func TestNetworkPolicyHostnameMatching(t *testing.T) {
 		{"misleading suffix", []string{"https://*.example.com"}, "notexample.com", false},
 		{"misleading prefix", []string{"https://*.example.com"}, "example.com.evil.test", false},
 		{"full wildcard", []string{"http://*"}, "unlisted.example", true},
+		{"IPv4", []string{"https://203.0.113.1"}, "203.0.113.1", true},
+		{"other IPv4", []string{"https://203.0.113.1"}, "203.0.113.2", false},
+		{"IPv6 normalized", []string{"https://[2001:db8::a]"}, "2001:DB8::A", true},
+		{"other IPv6", []string{"https://[2001:db8::a]"}, "2001:db8::b", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			policy, err := parseNetworkPolicy(test.origins)
@@ -130,6 +134,17 @@ func TestNetworkPolicyHostnameMatching(t *testing.T) {
 			}
 			if got := policy.allowsHostname(test.host); got != test.allowed {
 				t.Fatalf("allowsHostname(%q) = %t, want %t", test.host, got, test.allowed)
+			}
+			for _, origin := range policy.origins {
+				if got := policy.allows(origin.scheme, test.host, origin.port); got != test.allowed {
+					t.Errorf("allows(%q, %q, %d) = %t, want %t", origin.scheme, test.host, origin.port, got, test.allowed)
+				}
+				if policy.allows("ftp", test.host, origin.port) {
+					t.Error("HTTP policy ignored scheme restriction")
+				}
+				if policy.allows(origin.scheme, test.host, 65535) {
+					t.Error("HTTP policy ignored port restriction")
+				}
 			}
 		})
 	}
@@ -147,5 +162,45 @@ func TestSafeProxyDestinationRejectsHostLocalAddresses(t *testing.T) {
 		if !safeProxyDestination(address) {
 			t.Errorf("routable address %s was rejected", value)
 		}
+	}
+}
+
+func TestNetworkAllowListCanonicalization(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input []string
+		want  []string
+	}{
+		{"nil", nil, []string{}},
+		{"empty", []string{}, []string{}},
+		{"order and duplicates", []string{
+			"https://Z.example:443/", "http://a.example:80", "https://z.example",
+			"https://*.Example.COM:8443/", "http://a.example/", "https://*.example.com:8443",
+		}, []string{"https://z.example", "http://a.example", "https://*.example.com:8443"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeNetworkAllowList(test.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("normalized = %#v, want %#v", got, test.want)
+			}
+			again, err := normalizeNetworkAllowList(got)
+			if err != nil || !reflect.DeepEqual(again, got) {
+				t.Fatalf("normalization not idempotent: %#v, %v", again, err)
+			}
+		})
+	}
+}
+
+func TestNetworkAllowListReportsFirstInvalidOrigin(t *testing.T) {
+	values := []string{"https://valid.example", "ftp://invalid.example", "https://"}
+	want := `invalid origin "ftp://invalid.example": scheme must be http or https`
+	if normalized, err := normalizeNetworkAllowList(values); err == nil || err.Error() != want || normalized != nil {
+		t.Fatalf("normalization = %#v, %v; want nil, %q", normalized, err, want)
+	}
+	if policy, err := parseNetworkPolicy(values); err == nil || err.Error() != want || len(policy.origins) != 0 {
+		t.Fatalf("policy = %#v, %v; want empty, %q", policy, err, want)
 	}
 }

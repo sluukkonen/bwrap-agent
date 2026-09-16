@@ -47,12 +47,12 @@ func appendUnique(target []string, values ...string) []string {
 }
 
 func normalizeNetworkAllowList(values []string) ([]string, error) {
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		origin, err := parseNetworkOrigin(value)
-		if err != nil {
-			return nil, fmt.Errorf("invalid origin %q: %w", value, err)
-		}
+	policy, err := parseNetworkPolicy(values)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(policy.origins))
+	for _, origin := range policy.origins {
 		result = appendUnique(result, origin.String())
 	}
 	return result, nil
@@ -168,13 +168,18 @@ func (origin networkOrigin) String() string {
 	return origin.scheme + "://" + host
 }
 
+// matchesHostname expects the normalized hostname supplied by the policy.
+func (origin networkOrigin) matchesHostname(host string) bool {
+	return origin.allHosts || !origin.wildcard && origin.host == host || origin.wildcard && strings.HasSuffix(host, "."+origin.host)
+}
+
 func (policy networkPolicy) allows(scheme, host string, port uint16) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	for _, origin := range policy.origins {
 		if origin.scheme != scheme || origin.port != port {
 			continue
 		}
-		if origin.allHosts || !origin.wildcard && origin.host == host || origin.wildcard && strings.HasSuffix(host, "."+origin.host) {
+		if origin.matchesHostname(host) {
 			return true
 		}
 	}
@@ -184,7 +189,7 @@ func (policy networkPolicy) allows(scheme, host string, port uint16) bool {
 func (policy networkPolicy) allowsHostname(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	for _, origin := range policy.origins {
-		if origin.allHosts || !origin.wildcard && origin.host == host || origin.wildcard && strings.HasSuffix(host, "."+origin.host) {
+		if origin.matchesHostname(host) {
 			return true
 		}
 	}
