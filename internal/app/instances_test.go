@@ -662,7 +662,7 @@ func TestCorruptManagedMetadataFailsClearly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(identity.Root, instanceMetadataName), []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := managedInstanceRecords(); err == nil || !strings.Contains(err.Error(), "invalid instance") {
+	if _, err := managedInstanceSnapshots(); err == nil || !strings.Contains(err.Error(), "invalid instance") {
 		t.Fatalf("corrupt metadata list = %v", err)
 	}
 }

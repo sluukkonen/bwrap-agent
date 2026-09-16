@@ -1,24 +1,17 @@
 package app
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
-	"syscall"
-	"text/tabwriter"
 	"time"
-	"unicode"
 
 	"golang.org/x/sys/unix"
 )
@@ -35,19 +28,6 @@ type instanceMetadata struct {
 	Project    string    `json:"project"`
 	CreatedAt  time.Time `json:"created_at"`
 	LastUsedAt time.Time `json:"last_used_at"`
-}
-
-type instanceRecord struct {
-	Name           string    `json:"name"`
-	Project        string    `json:"project"`
-	Status         string    `json:"status"`
-	DiskUsageBytes uint64    `json:"disk_usage_bytes"`
-	CreatedAt      time.Time `json:"created_at"`
-	LastUsedAt     time.Time `json:"last_used_at"`
-	StatePath      string    `json:"state_path"`
-
-	root     string
-	metadata instanceMetadata
 }
 
 func managedInstancesDirectory(create bool) (string, bool, error) {
@@ -364,248 +344,6 @@ func markInstanceUsed(identity instanceIdentity) error {
 	return writeInstanceMetadata(identity.Root, metadata)
 }
 
-type fileIdentity struct {
-	device uint64
-	inode  uint64
-}
-
-func allocatedDiskUsage(root string) (uint64, error) {
-	return allocatedDiskUsageWith(root, os.Lstat)
-}
-
-func ignorableDiskUsageError(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission)
-}
-
-func allocatedDiskUsageWith(root string, lstat func(string) (os.FileInfo, error)) (uint64, error) {
-	seen := map[fileIdentity]bool{}
-	var total uint64
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if ignorableDiskUsageError(walkErr) {
-				return nil
-			}
-			return walkErr
-		}
-		info, err := lstat(path)
-		if err != nil {
-			if ignorableDiskUsageError(err) {
-				return nil
-			}
-			return err
-		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok {
-			return fmt.Errorf("unsupported file metadata for %s", path)
-		}
-		identity := fileIdentity{device: uint64(stat.Dev), inode: stat.Ino}
-		if seen[identity] {
-			return nil
-		}
-		seen[identity] = true
-		if stat.Blocks > 0 {
-			total += uint64(stat.Blocks) * 512
-		}
-		return nil
-	})
-	return total, err
-}
-
-func instanceStatus(root string) (string, error) {
-	lock, err := acquireDirectoryLock(root, true)
-	if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
-		return "running", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	if err := lock.Close(); err != nil {
-		return "", err
-	}
-	return "stopped", nil
-}
-
-func inspectManagedInstance(store, name string) (instanceRecord, error) {
-	metadata, found, err := existingManagedInstance(store, name)
-	if err != nil {
-		return instanceRecord{}, err
-	}
-	if !found {
-		return instanceRecord{}, fmt.Errorf("%w: %s", errManagedInstanceNotFound, name)
-	}
-	root := filepath.Join(store, name)
-	status, err := instanceStatus(root)
-	if err != nil {
-		return instanceRecord{}, fmt.Errorf("inspect instance %s status: %w", name, err)
-	}
-	usage, err := allocatedDiskUsage(root)
-	if err != nil {
-		return instanceRecord{}, fmt.Errorf("measure instance %s: %w", name, err)
-	}
-	return instanceRecord{
-		Name: name, Project: metadata.Project, Status: status, DiskUsageBytes: usage,
-		CreatedAt: metadata.CreatedAt, LastUsedAt: metadata.LastUsedAt,
-		StatePath: filepath.Join(root, "state"), root: root, metadata: metadata,
-	}, nil
-}
-
-func managedInstanceRecords() ([]instanceRecord, error) {
-	store, found, err := managedInstancesDirectory(false)
-	if err != nil || !found {
-		return nil, err
-	}
-	registryLock, err := acquireDirectoryLock(store, false)
-	if err != nil {
-		return nil, fmt.Errorf("lock managed instance store: %w", err)
-	}
-	defer func() {
-		if registryLock != nil {
-			_ = registryLock.Close()
-		}
-	}()
-	entries, err := os.ReadDir(store)
-	if err != nil {
-		return nil, err
-	}
-	records := make([]instanceRecord, 0, len(entries))
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), deletionTombstonePrefix) {
-			continue
-		}
-		if !entry.IsDir() {
-			return nil, fmt.Errorf("invalid entry in managed instance store: %s", entry.Name())
-		}
-		if _, err := safeName(entry.Name()); err != nil {
-			return nil, fmt.Errorf("invalid entry in managed instance store: %s", entry.Name())
-		}
-		metadata, found, err := existingManagedInstance(store, entry.Name())
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) || errors.Is(err, errManagedInstanceNotFound) {
-				continue
-			}
-			return nil, err
-		}
-		if !found {
-			continue
-		}
-		root := filepath.Join(store, entry.Name())
-		status, err := instanceStatus(root)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("inspect instance %s status: %w", entry.Name(), err)
-		}
-		records = append(records, instanceRecord{
-			Name: entry.Name(), Project: metadata.Project, Status: status,
-			CreatedAt: metadata.CreatedAt, LastUsedAt: metadata.LastUsedAt,
-			StatePath: filepath.Join(root, "state"), root: root, metadata: metadata,
-		})
-	}
-	if err := registryLock.Close(); err != nil {
-		return nil, err
-	}
-	registryLock = nil
-	sized := records[:0]
-	for _, record := range records {
-		usage, err := allocatedDiskUsage(record.root)
-		if err != nil {
-			return nil, fmt.Errorf("measure instance %s: %w", record.Name, err)
-		}
-		if _, err := os.Lstat(record.root); errors.Is(err, os.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return nil, err
-		}
-		record.DiskUsageBytes = usage
-		sized = append(sized, record)
-	}
-	records = sized
-	sort.Slice(records, func(left, right int) bool {
-		if records[left].LastUsedAt.Equal(records[right].LastUsedAt) {
-			return records[left].Name < records[right].Name
-		}
-		return records[left].LastUsedAt.After(records[right].LastUsedAt)
-	})
-	return records, nil
-}
-
-func humanBytes(bytes uint64) string {
-	const unit = uint64(1024)
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	value := float64(bytes)
-	units := []string{"KiB", "MiB", "GiB", "TiB", "PiB"}
-	for _, suffix := range units {
-		value /= 1024
-		if value < 1024 || suffix == units[len(units)-1] {
-			if value >= 10 {
-				return fmt.Sprintf("%.0f %s", value, suffix)
-			}
-			return fmt.Sprintf("%.1f %s", value, suffix)
-		}
-	}
-	return fmt.Sprintf("%d B", bytes)
-}
-
-func tableField(value string) string {
-	for _, char := range value {
-		if unicode.IsControl(char) {
-			return strconv.QuoteToGraphic(value)
-		}
-	}
-	return value
-}
-
-func listInstances(asJSON bool, output io.Writer) error {
-	records, err := managedInstanceRecords()
-	if err != nil {
-		return err
-	}
-	if asJSON {
-		if records == nil {
-			records = []instanceRecord{}
-		}
-		encoder := json.NewEncoder(output)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(records)
-	}
-	if len(records) == 0 {
-		_, err := fmt.Fprintln(output, "No instances.")
-		return err
-	}
-	writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(writer, "NAME\tSTATUS\tDISK USAGE\tLAST USED\tPROJECT"); err != nil {
-		return err
-	}
-	for _, record := range records {
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", record.Name, record.Status,
-			humanBytes(record.DiskUsageBytes), record.LastUsedAt.Local().Format("2006-01-02 15:04"), tableField(record.Project)); err != nil {
-			return err
-		}
-	}
-	return writer.Flush()
-}
-
-func confirmedDeletion(name string, record instanceRecord, yes, interactive bool, input io.Reader, prompt io.Writer) (bool, error) {
-	if yes {
-		return true, nil
-	}
-	if !interactive {
-		return false, errors.New("deletion requires an interactive terminal or --yes")
-	}
-	if _, err := fmt.Fprintf(prompt, "Delete instance %q for project %q (%s)? [y/N] ", name, record.Project, humanBytes(record.DiskUsageBytes)); err != nil {
-		return false, err
-	}
-	answer, err := bufio.NewReader(input).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false, err
-	}
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	return answer == "y" || answer == "yes", nil
-}
-
 func deletionTombstoneMatches(name, entry string) bool {
 	prefix := deletionTombstonePrefix + name + "-"
 	if !strings.HasPrefix(entry, prefix) {
@@ -851,47 +589,4 @@ func deleteManagedInstance(name string, expected instanceMetadata) error {
 		return fmt.Errorf("remove instance tombstone %s: %w", tombstone, err)
 	}
 	return nil
-}
-
-func deleteInstance(name string, yes, interactive bool, input io.Reader, output, prompt io.Writer) error {
-	if _, err := safeName(name); err != nil {
-		return err
-	}
-	store, found, err := managedInstancesDirectory(false)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return fmt.Errorf("instance not found: %s", name)
-	}
-	record, err := inspectManagedInstance(store, name)
-	if errors.Is(err, errManagedInstanceNotFound) {
-		removed, cleanupErr := retryPendingInstanceDeletion(store, name)
-		if cleanupErr != nil {
-			return cleanupErr
-		}
-		if removed > 0 {
-			_, writeErr := fmt.Fprintf(output, "Deleted pending instance data for %q.\n", name)
-			return writeErr
-		}
-	}
-	if err != nil {
-		return err
-	}
-	if record.Status == "running" {
-		return fmt.Errorf("instance %s is running", name)
-	}
-	confirmed, err := confirmedDeletion(name, record, yes, interactive, input, prompt)
-	if err != nil {
-		return err
-	}
-	if !confirmed {
-		_, err := fmt.Fprintln(output, "Not deleted.")
-		return err
-	}
-	if err := deleteManagedInstance(name, record.metadata); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(output, "Deleted instance %q.\n", name)
-	return err
 }
