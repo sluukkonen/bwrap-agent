@@ -893,7 +893,7 @@ func TestPrivatePortsBindHostLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer := plan.outer.argv(plan.Ports, plan.ProxyGuestPort, proxyPortPlaceholder, dnsPortPlaceholder)
+	outer := plan.outer.argv(plan.Ports, plan.HostPorts, plan.ProxyGuestPort, proxyPortPlaceholder, dnsPortPlaceholder)
 	joined := strings.Join(outer, "\x00")
 	for _, expected := range []string{"127.0.0.1/18080:8080", "127.0.0.1/15432:5432"} {
 		if !strings.Contains(joined, expected) {

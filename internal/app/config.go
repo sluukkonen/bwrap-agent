@@ -20,6 +20,7 @@ type fileConfig struct {
 	Network       *string        `toml:"network"`
 	NetworkAllow  []string       `toml:"network_allow"`
 	Publish       []string       `toml:"publish"`
+	HostPort      []string       `toml:"host_port"`
 	Podman        *string        `toml:"podman"`
 	WorkspaceMode *string        `toml:"workspace_mode"`
 	Landlock      *string        `toml:"landlock"`
@@ -52,6 +53,7 @@ type optionLayer struct {
 	network       *string
 	networkAllow  []string
 	publish       []string
+	hostPort      []string
 	podman        *string
 	workspaceMode *string
 	landlock      *string
@@ -204,6 +206,7 @@ func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, erro
 		network:       config.Network,
 		networkAllow:  networkAllow,
 		publish:       config.Publish,
+		hostPort:      config.HostPort,
 		podman:        config.Podman,
 		workspaceMode: config.WorkspaceMode,
 		landlock:      config.Landlock,
@@ -386,6 +389,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		}
 		opts.NetworkAllow = appendUnique(opts.NetworkAllow, layer.networkAllow...)
 		opts.Publish = append(opts.Publish, layer.publish...)
+		opts.HostPort = append(opts.HostPort, layer.hostPort...)
 		opts.ROBind = append(opts.ROBind, layer.roBind...)
 		opts.RWBind = append(opts.RWBind, layer.rwBind...)
 		for name, directive := range layer.environment {
@@ -411,6 +415,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		network:       cli.Network,
 		networkAllow:  cliNetworkAllow,
 		publish:       cli.Publish,
+		hostPort:      cli.HostPort,
 		podman:        cli.Podman,
 		workspaceMode: cli.WorkspaceMode,
 		landlock:      cli.Landlock,

@@ -29,6 +29,7 @@ landlock = "off"
 seccomp = "off"
 network_allow = ["https://user.example", "https://duplicate.example"]
 publish = ["11001:1"]
+host_port = ["12001:1"]
 ro_bind = ["user-relative"]
 unset_env = ["PROJECT_REINTRODUCED"]
 
@@ -47,6 +48,7 @@ landlock = "auto"
 seccomp = "auto"
 network_allow = ["https://project.example", "https://duplicate.example:443"]
 publish = ["11002:2"]
+host_port = ["12002:2"]
 ro_bind = ["project-relative"]
 unset_env = ["PROJECT_UNSET"]
 
@@ -76,6 +78,7 @@ PRESENT = { inherit = true }
 		"--seccomp", "required",
 		"--agent-config",
 		"--publish", "11003:3",
+		"--host-port", "12003:3", "--host-port", "12004:4/udp",
 		"--ro-bind", "cli-relative",
 		"--env", "OVERRIDE=cli",
 		"--env", "CLI_INHERIT",
@@ -90,6 +93,9 @@ PRESENT = { inherit = true }
 	}
 	if want := []string{"11001:1", "11002:2", "11003:3"}; !reflect.DeepEqual(opts.Publish, want) {
 		t.Fatalf("publish = %#v, want %#v", opts.Publish, want)
+	}
+	if want := []string{"12001:1", "12002:2", "12003:3", "12004:4/udp"}; !reflect.DeepEqual(opts.HostPort, want) {
+		t.Fatalf("host ports = %#v, want %#v", opts.HostPort, want)
 	}
 	if want := []string{"https://user.example", "https://duplicate.example", "https://project.example", "https://cli.example"}; !reflect.DeepEqual(opts.NetworkAllow, want) {
 		t.Fatalf("network allowlist = %#v, want %#v", opts.NetworkAllow, want)

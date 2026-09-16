@@ -42,6 +42,7 @@ type LaunchPlan struct {
 	Launcher        []string
 	Bwrap           []string
 	Ports           []PortMapping
+	HostPorts       []PortMapping
 	LaunchEnv       map[string]string
 	TTY             bool
 	ConfigFiles     []ConfigSource
@@ -81,6 +82,7 @@ func writePlanJSON(w io.Writer, p LaunchPlan) error {
 		ProxyGuestPort int               `json:"proxy_guest_port,omitempty"`
 		Command        []string          `json:"command"`
 		Ports          []PortMapping     `json:"ports"`
+		HostPorts      []PortMapping     `json:"host_ports"`
 		Environment    map[string]string `json:"environment"`
 		TTY            bool              `json:"tty"`
 		ConfigFiles    []ConfigSource    `json:"config_files"`
@@ -92,7 +94,7 @@ func writePlanJSON(w io.Writer, p LaunchPlan) error {
 		Instance:  p.Instance, Project: p.Project, State: p.State, WorkspaceMode: p.WorkspaceMode,
 		Landlock: p.Landlock, Seccomp: p.Seccomp, Bubblewrap: p.Bubblewrap,
 		NetworkAllow: append([]string{}, p.NetworkAllow...), ProxyGuestPort: p.ProxyGuestPort,
-		Command: p.Command, Ports: p.Ports, Environment: p.LaunchEnv, TTY: p.TTY,
+		Command: p.Command, Ports: p.Ports, HostPorts: append([]PortMapping{}, p.HostPorts...), Environment: p.LaunchEnv, TTY: p.TTY,
 		ConfigFiles: configFiles, ProtectedPaths: append([]string{}, p.ProtectedPaths...),
 		Warnings: append([]string{}, p.Warnings...), Argv: p.Argv(),
 	}

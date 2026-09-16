@@ -201,6 +201,8 @@ printf 'equals-launcher-ok\n'
         printf "private-allowlisted-dns-ok\n"
     '
 
+"$port_server" --host-ports-integration "$binary"
+
 private_port_one="$test_root/private-port-one"
 private_port_two="$test_root/private-port-two"
 mkdir "$private_port_one" "$private_port_two"

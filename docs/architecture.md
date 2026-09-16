@@ -90,8 +90,8 @@ user-wide literal would collide across canonical projects; `--instance` remains
 the highest-precedence override. Help and CLI syntax handling happen before
 config loading, providing a recovery path for malformed files.
 
-Config scalars replace lower values, while network-allow, mount, and publish
-lists append. Network origins are normalized and deduplicated.
+Config scalars replace lower values, while network-allow, mount, publish, and
+host-port lists append. Network origins are normalized and deduplicated.
 
 Environment values are merged as literal, host-inherit, or unset directives and
 resolved only after all layers have been applied. Only variables explicitly
@@ -474,3 +474,25 @@ inbound forwarding is disabled because it would race for the same host ports.
 `run --publish HOST:GUEST` installs a deliberate loopback mapping; `HOST=0`
 chooses a currently unused host port. Allocation has a small bind-release-start
 race that should be removed by a future long-running supervisor.
+
+### Selected host services
+
+`--host-port [SANDBOX_PORT:]HOST_PORT[/tcp|udp]` adds explicit namespace-to-host
+mappings to the existing pasta `--tcp-ns` and `--udp-ns` lists. In splice-only
+mode these connect sandbox loopback to host loopback, without adding a routable
+interface or another forwarding process. TCP carries opaque bidirectional
+streams, including HTTP and WebSockets; UDP forwards datagrams.
+
+User and approved project `host_port` lists append with CLI mappings. Planning
+validates fixed nonzero ports and private network mode, removes identical
+mappings, and rejects conflicting sandbox endpoints, published guest endpoints,
+and the reserved DNS/proxy endpoints. Host targets need not be listening during
+planning or startup. The launch plan carries `HostPorts` separately from
+published `Ports`, renders them in both descriptive and runtime arguments, and
+reports them as `host_ports` in dry-run JSON.
+
+These mappings bypass the HTTP allowlist and are available to sandbox processes
+for the lifetime of the pasta namespace. Default loopback proxy exclusions
+allow direct clients to use them; explicit environment overrides and nested
+container networking retain their existing semantics. The host service's own
+network and filesystem access is outside the sandbox policy.

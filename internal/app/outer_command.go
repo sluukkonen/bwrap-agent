@@ -13,7 +13,7 @@ type outerCommand struct {
 	pasta  string
 }
 
-func (outer outerCommand) argv(ports []PortMapping, proxyPort int, proxyHostPort, dnsHostPort string) []string {
+func (outer outerCommand) argv(ports, hostPorts []PortMapping, proxyPort int, proxyHostPort, dnsHostPort string) []string {
 	var argv []string
 	if outer.podman != "" {
 		argv = append(argv, outer.podman, "unshare")
@@ -25,6 +25,14 @@ func (outer outerCommand) argv(ports []PortMapping, proxyPort int, proxyHostPort
 		}
 		tcpNamespacePorts := fmt.Sprintf("%d:%s,%d:%s", proxyPort, proxyHostPort, dnsGuestPort, dnsHostPort)
 		dnsNamespacePort := fmt.Sprintf("%d:%s", dnsGuestPort, dnsHostPort)
+		for _, port := range hostPorts {
+			mapping := fmt.Sprintf(",%d:%d", port.Guest, port.Host)
+			if port.Protocol == "udp" {
+				dnsNamespacePort += mapping
+			} else {
+				tcpNamespacePorts += mapping
+			}
+		}
 		argv = append(argv, "--tcp-ports", "none", "--udp-ports", "none", "--tcp-ns", tcpNamespacePorts, "--udp-ns", dnsNamespacePort)
 		for _, port := range ports {
 			option := "--tcp-ports"
@@ -39,7 +47,7 @@ func (outer outerCommand) argv(ports []PortMapping, proxyPort int, proxyHostPort
 }
 
 func (p LaunchPlan) argv(proxyHostPort, dnsHostPort string) []string {
-	outer := p.outer.argv(p.Ports, p.ProxyGuestPort, proxyHostPort, dnsHostPort)
+	outer := p.outer.argv(p.Ports, p.HostPorts, p.ProxyGuestPort, proxyHostPort, dnsHostPort)
 	argv := make([]string, 0, len(outer)+len(p.Launcher)+len(p.Bwrap))
 	argv = append(argv, outer...)
 	argv = append(argv, p.Launcher...)

@@ -139,7 +139,7 @@ EMPTY = ""
 FROM_HOST = { inherit = true }
 ```
 
-Scalar settings are replaced by higher-precedence layers. `instance` is accepted only in the project file, and `--instance` takes precedence over it. `network_allow`, `publish`, `ro_bind`, and `rw_bind` arrays are appended; duplicate normalized network origins are removed, and relative bind paths are resolved from the directory containing their config file. Environment entries merge by name. A string is literal, including an empty string, while `{ inherit = true }` deliberately copies the same-named variable from the launcher's host environment. If that variable is absent, it remains unset. The equivalent CLI forms are `--env NAME=value`, `--env NAME=`, and `--env NAME`.
+Scalar settings are replaced by higher-precedence layers. `instance` is accepted only in the project file, and `--instance` takes precedence over it. `network_allow`, `publish`, `host_port`, `ro_bind`, and `rw_bind` arrays are appended; duplicate normalized network origins are removed, and relative bind paths are resolved from the directory containing their config file. Environment entries merge by name. A string is literal, including an empty string, while `{ inherit = true }` deliberately copies the same-named variable from the launcher's host environment. If that variable is absent, it remains unset. The equivalent CLI forms are `--env NAME=value`, `--env NAME=`, and `--env NAME`.
 
 > **Warning:** Approved project configuration is evaluated before the sandbox starts. It can request arbitrary host bind mounts, select host networking, and expose host environment variables. Review `.bwrap-agent.toml` before approving it, or launch with `run --no-project-config` to ignore it. Approval authorizes the exact configuration bytes, not the contents of referenced paths.
 
@@ -190,6 +190,52 @@ $ ./bin/bwrap-agent run --publish 13000:3000 opencode
 $ ./bin/bwrap-agent run --publish 0:3000 opencode
 ```
 
+### Accessing host services
+
+Use `--host-port [SANDBOX_PORT:]HOST_PORT[/tcp|udp]` to reach selected host
+loopback services from a private sandbox. A single port uses the same number
+on both sides; the default protocol is TCP. For example:
+
+```bash
+# Sandbox localhost:9222 connects to host localhost:9222.
+./bin/bwrap-agent run --host-port 9222 opencode
+
+# Sandbox localhost:15432 connects to host localhost:5432.
+./bin/bwrap-agent run --host-port 15432:5432 --host-port 18000:8000/udp bash
+```
+
+The equivalent user or approved project configuration is:
+
+```toml
+host_port = ["9222", "15432:5432", "18000:8000/udp"]
+```
+
+Lists append across configuration layers and repeated identical mappings are
+removed. Both ports must be between 1 and 65535; automatic allocation, address
+arguments, and ranges are unsupported. Conflicting mappings, published guest
+ports, sandbox DNS port 53 (TCP/UDP), and proxy port 65532 (TCP) are rejected.
+Host services can start after the sandbox. Mappings end with that launch and
+appear separately as `host_ports` in dry-run JSON.
+
+These are direct TCP/UDP connections, including WebSockets, independent of
+`--network-allow`. All sandbox processes can access the selected services;
+unrequested host ports remain unavailable. The default `NO_PROXY` includes
+loopback, so use `127.0.0.1` to reach these services directly. Explicit proxy
+environment overrides remain your responsibility. Nested-container networking
+is unchanged; these examples connect directly from the sandbox.
+
+For Chrome DevTools MCP, run Chrome on the host with a dedicated debugging
+profile, forward port 9222, and run the MCP server inside the sandbox with
+`--browser-url=http://127.0.0.1:9222`. Install the MCP package beforehand or allow
+its package registry through the normal network policy. Chrome's
+[connection guide](https://github.com/ChromeDevTools/chrome-devtools-mcp/blob/main/docs/advanced-usage.md#manual-connection-using-port-forwarding)
+explains browser setup. A stdio MCP server running on the host would still need
+a network transport bridge; port forwarding does not carry stdio by itself.
+
+Exposing a service grants its capabilities, including whatever host resources
+it can access. A host browser uses its own profile and network access; requests
+made through that browser are outside the sandbox's HTTP allowlist.
+
 `--network host` is available for compatibility but loses port isolation and is unrestricted; combining it with a non-empty allowlist is rejected. `--network none` disables networking and ignores the allowlist.
 
 ## Podman and Testcontainers
@@ -229,6 +275,7 @@ Do not bind the host Podman socket into this sandbox. Podman's API is deliberate
                            choose isolated (default), shared, or disabled networking
 --network-allow ORIGIN     allow one HTTP/HTTPS origin in private mode (repeatable)
 --publish PORT             publish a private-network port on host loopback
+--host-port PORT           expose a host loopback port inside a private sandbox
 --dry-run                 print the full launch plan as JSON
 --allow-control-file-writes
                           disable built-in control-path protection for this run

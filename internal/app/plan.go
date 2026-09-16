@@ -542,6 +542,10 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	if len(ports) > 0 && opts.Network != "private" {
 		return LaunchPlan{}, errors.New("--publish requires --network private")
 	}
+	hostPorts, err := resolveHostPorts(opts.HostPort, opts.Network, ports)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
 	usePTY := opts.TTY == "always" || opts.TTY == "auto" && isTerminal(os.Stdin.Fd()) && isTerminal(os.Stdout.Fd())
 	clipboardMode, clipboardConfig, err := prepareClipboard(opts.Clipboard, usePTY, host)
 	if err != nil {
@@ -647,7 +651,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		NetworkAllow: append([]string{}, opts.NetworkAllow...), ProxyGuestPort: proxyPort,
 		Command: command.Argv, outer: outerCommand{podman: podmanBin, pasta: pastaBin},
 		Launcher: launcher,
-		Bwrap:    bwrap, Ports: ports, LaunchEnv: launchEnv,
+		Bwrap:    bwrap, Ports: ports, HostPorts: hostPorts, LaunchEnv: launchEnv,
 		TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: layout.protectedPaths,
 		Warnings: warnings}, nil
 }

@@ -85,6 +85,13 @@ agent and its containers.
   allowed origin can receive project contents and must be trusted accordingly;
   use `--network none` to disable external communication. Host networking
   remains unrestricted and permits arbitrary exfiltration.
+- Explicit `--host-port` mappings grant sandbox processes direct TCP/UDP access
+  to selected host loopback services, bypassing the HTTP allowlist. They expose
+  the capabilities of any service listening on that port during the launch;
+  they do not authenticate a particular process. Host-service activity uses
+  that service's host privileges. For example, controlling a host browser can
+  expose its profile and reach destinations outside the sandbox allowlist.
+  Other host ports remain unavailable through this forwarding mechanism.
 - Interactive commands control a launcher-owned proxy PTY, not the host terminal
   device. Their escape-sequence output is necessarily forwarded to the user's
   terminal; the launcher restores terminal modes on exit as defense in depth.

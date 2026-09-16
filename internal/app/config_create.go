@@ -62,6 +62,12 @@ const commonConfigTemplate = `# Expose detected host agent configuration read-on
 # Default: []. Arrays from configuration layers and the CLI are appended.
 # publish = ["13000:3000"]
 
+# Expose selected host loopback services directly inside a private sandbox.
+# Entries use "[SANDBOX_PORT:]HOST_PORT[/tcp|udp]"; default: same port, TCP.
+# Both ports must be 1-65535. Default: []. Lists append across layers.
+# These services bypass the HTTP allowlist and retain their host privileges.
+# host_port = ["9222", "15432:5432"]
+
 # Podman mode: "auto" (enable when compatible and found), "on" (require),
 # or "off". Enabled modes provide a lazy API socket. A read-only workspace or
 # required Landlock enforcement disables "auto". Default: "auto".

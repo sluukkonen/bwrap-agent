@@ -31,6 +31,7 @@ type Options struct {
 	Network                string
 	NetworkAllow           []string
 	Publish                []string
+	HostPort               []string
 	Podman                 string
 	WorkspaceMode          string
 	Landlock               string
@@ -59,6 +60,7 @@ type cliOptions struct {
 	Network                *string    `name:"network" enum:"private,host,none" placeholder:"private|host|none" help:"Network mode: private (HTTP/HTTPS allowlist enforced), host (shared and unrestricted), or none (disabled). Default: private."`
 	NetworkAllow           stringList `name:"network-allow" placeholder:"ORIGIN" help:"Allow an HTTP/HTTPS origin in private mode; repeatable (for example https://registry.example.com or https://*.example.com)."`
 	Publish                stringList `name:"publish" placeholder:"[HOST_PORT:]GUEST_PORT[/tcp|udp]" help:"Publish a private-network port on host loopback; repeatable. HOST_PORT=0 chooses a free port. Requires --network=private."`
+	HostPort               stringList `name:"host-port" placeholder:"[SANDBOX_PORT:]HOST_PORT[/tcp|udp]" help:"Expose a host loopback port inside the sandbox; repeatable. Default: same port, TCP. Requires --network=private; ports must be 1-65535."`
 	Podman                 *string    `name:"podman" enum:"auto,on,off" placeholder:"auto|on|off" help:"Podman mode: auto (enable if compatible and found), on (require), or off (disable). Enabled modes provide a lazy API socket. Read-only workspaces and required Landlock disable auto. Default: auto."`
 	WorkspaceMode          *string    `name:"workspace-mode" enum:"write-through,copy-on-write,read-only" placeholder:"write-through|copy-on-write|read-only" help:"Workspace behavior: write-through (persist changes), copy-on-write (discard changes), or read-only. Default: write-through."`
 	Landlock               *string    `name:"landlock" enum:"auto,required,off" placeholder:"auto|required|off" help:"Landlock filesystem enforcement: auto (when compatible), required (fail closed), or off. Default: auto."`

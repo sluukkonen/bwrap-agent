@@ -7,6 +7,13 @@ import (
 )
 
 func main() {
+	if handled, err := runHostPortMode(); handled {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:3000")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
