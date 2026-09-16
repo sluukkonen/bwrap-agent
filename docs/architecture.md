@@ -205,10 +205,10 @@ complete workspace immutable.
 
 Protection applies regardless of the target executable.
 `run --allow-control-file-writes` is a CLI-only, all-or-nothing escape hatch; it
-also permits symlinked project configuration and emits a warning in
-`write-through`. `run --dry-run` reports the effective `protected_paths`,
-workspace mode, Bubblewrap tier, Landlock status, and seccomp status and
-profile.
+emits a warning in `write-through`. It does not bypass configuration approval
+or permit symlinked project configuration. `run --dry-run` reports the
+effective `protected_paths`, workspace mode, Bubblewrap tier, Landlock status,
+and seccomp status and profile.
 
 ### Generated files and persistent state
 
