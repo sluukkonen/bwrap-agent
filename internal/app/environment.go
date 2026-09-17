@@ -22,7 +22,7 @@ type environmentInputs struct {
 }
 
 func buildSandboxEnvironment(opts Options, input environmentInputs) (map[string]string, error) {
-	state, instance := input.identity.State, input.identity.Instance
+	instance := input.identity.Instance
 	workspaceMode := opts.WorkspaceMode
 	environment := map[string]string{
 		"HOME": input.home.home, "USER": envValue(input.hostEnv, "USER", input.defaultAccount),
@@ -30,7 +30,7 @@ func buildSandboxEnvironment(opts Options, input environmentInputs) (map[string]
 		"PATH":            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"XDG_CONFIG_HOME": filepath.Join(input.home.home, ".config"), "XDG_CACHE_HOME": filepath.Join(input.home.home, ".cache"),
 		"XDG_DATA_HOME": filepath.Join(input.home.home, ".local", "share"), "XDG_STATE_HOME": filepath.Join(input.home.home, ".local", "state"),
-		"XDG_RUNTIME_DIR": sandboxRuntimeDirectory, "TMPDIR": filepath.Join(state, "tmp"),
+		"XDG_RUNTIME_DIR": sandboxRuntimeDirectory, "TMPDIR": "/tmp",
 		"BWRAP_AGENT_INSTANCE": instance,
 	}
 	if opts.Network == "private" {

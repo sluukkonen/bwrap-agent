@@ -19,6 +19,7 @@ import (
 const instanceMetadataVersion = 1
 const instanceMetadataName = "metadata.json"
 const deletionTombstonePrefix = ".deleting-"
+const podmanStorageRelative = "home/.local/share/containers/storage"
 
 var errManagedInstanceNotFound = errors.New("managed instance not found")
 
@@ -358,13 +359,12 @@ func deletionTombstoneMatches(name, entry string) bool {
 }
 
 func tombstoneNeedsPodmanCleanup(tombstone string) (bool, error) {
-	path := filepath.Join(tombstone, "state", "podman", "storage")
-	info, err := os.Lstat(path)
-	if err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-		return true, nil
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	found, err := tombstoneHasPodmanStorage(tombstone)
+	if err != nil {
 		return false, err
+	}
+	if found {
+		return true, nil
 	}
 	entries, err := os.ReadDir(tombstone)
 	if err != nil {
@@ -376,6 +376,31 @@ func tombstoneNeedsPodmanCleanup(tombstone string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// The private home is sandbox-writable. Probe each component without following
+// symlinks, and use rootless cleanup if permissions prevent inspecting it.
+func tombstoneHasPodmanStorage(tombstone string) (bool, error) {
+	fd, err := unix.Open(tombstone, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	for _, part := range strings.Split("state/"+podmanStorageRelative, "/") {
+		child, err := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR) || errors.Is(err, unix.ELOOP) {
+			return false, nil
+		}
+		if errors.Is(err, unix.EACCES) || errors.Is(err, unix.EPERM) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		_ = unix.Close(fd)
+		fd = child
+	}
+	return true, nil
 }
 
 func podmanCleanupEnvironment(environment []string, accountName, root string) []string {
@@ -465,11 +490,18 @@ func removeInstanceTombstoneWith(path string, removeAll, removeWithPodman func(s
 	if needsPodmanCleanup {
 		podmanErr = removeWithPodman(path)
 	}
-	if err := removeAll(path); err != nil {
+	directErr := removeAll(path)
+	if !needsPodmanCleanup && (errors.Is(directErr, unix.EACCES) || errors.Is(directErr, unix.EPERM)) {
+		// Direct removal may have partially removed an unrecognized or older store.
+		// Retry in the subordinate-ID namespace without depending on its layout.
+		podmanErr = removeWithPodman(path)
+		directErr = removeAll(path)
+	}
+	if directErr != nil {
 		if podmanErr != nil {
-			return fmt.Errorf("Podman namespace removal failed (%v); direct removal also failed: %w", podmanErr, err)
+			return errors.Join(fmt.Errorf("Podman namespace removal failed: %w", podmanErr), fmt.Errorf("direct removal failed: %w", directErr))
 		}
-		return err
+		return directErr
 	}
 	return nil
 }

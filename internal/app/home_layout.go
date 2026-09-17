@@ -59,33 +59,21 @@ func resolveHomeLayout(identity instanceIdentity) (homeLayout, error) {
 	return homeLayout{state: identity.State, home: home, canonicalHome: canonical}, nil
 }
 
-func (layout homeLayout) roots() []resourceMount {
-	return []resourceMount{
-		{Source: filepath.Join(layout.state, "home"), Destination: layout.canonicalHome},
-		{Source: filepath.Join(layout.state, "config"), Destination: filepath.Join(layout.canonicalHome, ".config")},
-		{Source: filepath.Join(layout.state, "data"), Destination: filepath.Join(layout.canonicalHome, ".local", "share")},
-	}
+func (layout homeLayout) backingHome() string {
+	return filepath.Join(layout.state, "home")
 }
 
 func (layout homeLayout) destination(backing string) string {
-	for _, root := range layout.roots() {
-		if pathWithin(root.Source, backing) {
-			relative, _ := filepath.Rel(root.Source, backing)
-			return filepath.Join(root.Destination, relative)
-		}
+	if pathWithin(layout.backingHome(), backing) {
+		relative, _ := filepath.Rel(layout.backingHome(), backing)
+		return filepath.Join(layout.canonicalHome, relative)
 	}
 	return backing
 }
 
 func (layout homeLayout) prepare() error {
-	for _, relative := range []string{"home", "config", "data", "home/.cache", "home/.local/state"} {
+	for _, relative := range []string{"home/.config", "home/.cache", "home/.local/share", "home/.local/state"} {
 		if _, err := ensureStateDirectory(layout.state, relative, 0o700); err != nil {
-			return err
-		}
-	}
-	for _, root := range layout.roots()[1:] {
-		relative, _ := filepath.Rel(layout.canonicalHome, root.Destination)
-		if err := validateStateMountpoint(layout.state, filepath.Join(layout.state, "home", relative), root.Source); err != nil {
 			return err
 		}
 	}
@@ -93,22 +81,15 @@ func (layout homeLayout) prepare() error {
 }
 
 // Validate the private backing entry, never the host file that happens to have
-// the same pathname as a sandbox destination. The most specific XDG root wins.
+// the same pathname as a sandbox destination.
 func (layout homeLayout) validateMount(source, destination string) error {
-	if destination != layout.state && pathWithin(layout.state, destination) {
-		return nil // State destinations are validated by their resource preparer.
-	}
 	if layout.home != layout.canonicalHome && pathWithin(layout.home, destination) {
 		relative, _ := filepath.Rel(layout.home, destination)
 		destination = filepath.Join(layout.canonicalHome, relative)
 	}
-	roots := layout.roots()
-	for index := len(roots) - 1; index >= 0; index-- {
-		root := roots[index]
-		if pathWithin(root.Destination, destination) {
-			relative, _ := filepath.Rel(root.Destination, destination)
-			return validateStateMountpoint(layout.state, filepath.Join(root.Source, relative), source)
-		}
+	if pathWithin(layout.canonicalHome, destination) {
+		relative, _ := filepath.Rel(layout.canonicalHome, destination)
+		return validateStateMountpoint(layout.state, filepath.Join(layout.backingHome(), relative), source)
 	}
 	return nil
 }
@@ -118,11 +99,6 @@ func (layout homeLayout) mountResource(mounts *mountBuilder, bind resourceMount)
 	if err := layout.validateMount(bind.Source, destination); err != nil {
 		return err
 	}
-	// Retain the existing state-path view for persisted absolute references.
-	// Submounts do not propagate between the two aliases of the backing tree.
-	mounts.mount("--ro-bind", bind.Source, bind.Destination)
-	if destination != bind.Destination {
-		mounts.mount("--ro-bind", bind.Source, destination)
-	}
+	mounts.mount("--ro-bind", bind.Source, destination)
 	return nil
 }

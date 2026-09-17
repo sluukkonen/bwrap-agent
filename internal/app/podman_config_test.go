@@ -12,7 +12,7 @@ import (
 )
 
 func TestPodmanConfigSource(t *testing.T) {
-	for _, scenario := range []string{"xdg", "home", "missing", "legacy", "symlink", "dangling", "file", "project", "unreadable", "destination-symlink"} {
+	for _, scenario := range []string{"xdg", "home", "missing", "symlink", "dangling", "file", "project", "unreadable", "destination-symlink"} {
 		t.Run(scenario, func(t *testing.T) {
 			root, context := testHostContext(t)
 			home := t.TempDir()
@@ -42,14 +42,9 @@ func TestPodmanConfigSource(t *testing.T) {
 				if err := os.WriteFile(source, nil, 0o600); err != nil {
 					t.Fatal(err)
 				}
-			case "missing", "legacy":
+			case "missing":
 			default:
 				if err := os.Mkdir(source, 0o700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if scenario == "legacy" {
-				if _, err := writeStateFile(context.state, "config/containers/containers.conf", []byte("invalid legacy config"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -63,14 +58,15 @@ func TestPodmanConfigSource(t *testing.T) {
 				t.Cleanup(func() { _ = os.Chmod(config, 0o700) })
 			}
 			if scenario == "destination-symlink" {
-				if err := os.Mkdir(filepath.Join(context.state, "config"), 0o700); err != nil {
+				if err := os.MkdirAll(filepath.Join(context.state, "home", ".config"), 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink(t.TempDir(), filepath.Join(context.state, "config", "containers")); err != nil {
+				if err := os.Symlink(t.TempDir(), filepath.Join(context.state, "home", ".config", "containers")); err != nil {
 					t.Fatal(err)
 				}
 			}
-			mount, err := preparePodmanConfigMount(context)
+			generated := t.TempDir()
+			mount, err := preparePodmanConfigMount(context, generated)
 			wantError := scenario == "unreadable" || scenario == "file" || scenario == "project" || scenario == "dangling" || scenario == "destination-symlink"
 			if wantError {
 				if err == nil {
@@ -82,14 +78,14 @@ func TestPodmanConfigSource(t *testing.T) {
 				t.Fatal(err)
 			}
 			expected := source
-			if scenario == "missing" || scenario == "legacy" {
-				expected = filepath.Join(context.state, "podman", "config", "empty-user-config")
+			if scenario == "missing" {
+				expected = filepath.Join(generated, "podman", "empty-user-config")
 			}
 			expected, err = filepath.EvalSymlinks(expected)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mount.Source != expected || mount.Destination != filepath.Join(context.state, "config", "containers") {
+			if mount.Source != expected || mount.Destination != filepath.Join(context.state, "home", ".config", "containers") {
 				t.Fatalf("unexpected config mount: %#v", mount)
 			}
 		})
@@ -116,8 +112,8 @@ func TestPodmanConfigPlan(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			generated := filepath.Join(plan.State, "podman", "config", "containers.conf")
-			storage := filepath.Join(plan.State, "podman", "config", "storage.conf")
+			generated := filepath.Join(filepath.Dir(plan.State), "generated", "podman", "containers.conf")
+			storage := filepath.Join(filepath.Dir(plan.State), "generated", "podman", "storage.conf")
 			if plan.LaunchEnv["CONTAINERS_CONF"] != filepath.Join(podmanBootstrapPlaceholder, "containers.conf") || plan.LaunchEnv["CONTAINERS_STORAGE_CONF"] != filepath.Join(podmanBootstrapPlaceholder, "storage.conf") {
 				t.Fatalf("supervisor config not isolated: %#v", plan.LaunchEnv)
 			}
@@ -130,11 +126,12 @@ func TestPodmanConfigPlan(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, expected := range []string{
-				"--ro-bind\x00" + resolved + "\x00" + filepath.Join(plan.State, "config", "containers"),
-				"--ro-bind\x00" + resolved + "\x00" + filepath.Join(plan.State, "home", ".config", "containers"),
+				"--ro-bind\x00" + resolved + "\x00" + filepath.Join(mustHomeDirectory(t), ".config", "containers"),
+				"--ro-bind\x00" + generated + "\x00" + filepath.Join(sandboxPodmanConfigDirectory, "containers.conf"),
+				"--ro-bind\x00" + storage + "\x00" + filepath.Join(sandboxPodmanConfigDirectory, "storage.conf"),
 				"--unsetenv\x00CONTAINERS_CONF",
-				"--setenv\x00CONTAINERS_CONF_OVERRIDE\x00" + generated,
-				"--setenv\x00CONTAINERS_STORAGE_CONF\x00" + storage,
+				"--setenv\x00CONTAINERS_CONF_OVERRIDE\x00" + filepath.Join(sandboxPodmanConfigDirectory, "containers.conf"),
+				"--setenv\x00CONTAINERS_STORAGE_CONF\x00" + filepath.Join(sandboxPodmanConfigDirectory, "storage.conf"),
 			} {
 				if !strings.Contains(joined, expected) {
 					t.Fatalf("sandbox missing %q", expected)
@@ -188,9 +185,10 @@ func TestPodmanConfigPlan(t *testing.T) {
 	}
 }
 
-func TestStorageConfigKeepsRootlessBackingPath(t *testing.T) {
+func TestStorageConfigUsesSandboxHome(t *testing.T) {
 	state := t.TempDir()
-	path, err := writeStorageConfig(state)
+	layout := homeLayout{state: state, canonicalHome: "/home/test"}
+	path, err := writeStorageConfig(t.TempDir(), layout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +205,86 @@ func TestStorageConfigKeepsRootlessBackingPath(t *testing.T) {
 	if err := toml.Unmarshal(content, &config); err != nil {
 		t.Fatal(err)
 	}
-	if config.Storage.GraphRoot != filepath.Join(state, "podman", "storage") || config.Storage.RootlessStoragePath != filepath.Join(state, "data", "containers", "storage") {
-		t.Fatalf("storage paths do not preserve existing backing directories: %s", content)
+	if config.Storage.GraphRoot != "/home/test/.local/share/containers/storage" || config.Storage.RootlessStoragePath != config.Storage.GraphRoot {
+		t.Fatalf("storage paths do not use the sandbox home: %s", content)
+	}
+}
+
+func mustHomeDirectory(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+func TestPodmanStorageMountOverlaps(t *testing.T) {
+	layout := homeLayout{state: "/instances/test/state", home: "/alias", canonicalHome: "/home/test"}
+	for _, kind := range []string{"project", "git", "ro", "rw"} {
+		for _, base := range []string{layout.home, layout.canonicalHome} {
+			for _, relative := range []string{".local/share", ".local/share/containers/storage", ".local/share/containers/storage/volumes", ".local/share/containers/storage-other", "tools"} {
+				t.Run(kind+base+relative, func(t *testing.T) {
+					destination := filepath.Join(base, relative)
+					identity := instanceIdentity{}
+					switch kind {
+					case "project":
+						identity.Project = destination
+					case "git":
+						identity.GitCommon = destination
+					case "ro":
+						identity.ROBind = []string{destination}
+					case "rw":
+						identity.RWBind = []string{destination}
+					}
+					err := validatePodmanStorageMounts(layout, identity)
+					wantConflict := relative != "tools" && relative != ".local/share/containers/storage-other"
+					if (err != nil) != wantConflict {
+						t.Fatalf("validation = %v, conflict=%t", err, wantConflict)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestBuildPlanRejectsPodmanStorageMounts(t *testing.T) {
+	for _, mode := range []string{"on", "auto", "off"} {
+		for _, kind := range []string{"project", "ro", "rw", "alias"} {
+			t.Run(mode+"/"+kind, func(t *testing.T) {
+				home, opts := homeLayoutFixture(t)
+				opts.Podman = mode
+				storageParent := filepath.Join(home, ".local/share")
+				if err := os.MkdirAll(storageParent, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				switch kind {
+				case "project":
+					opts.Project = storageParent
+				case "ro":
+					opts.ROBind = []string{storageParent}
+				case "rw":
+					opts.RWBind = []string{storageParent}
+				case "alias":
+					alias := filepath.Join(home, "storage-alias")
+					if err := os.Symlink(storageParent, alias); err != nil {
+						t.Fatal(err)
+					}
+					opts.ROBind = []string{alias}
+				}
+				_, err := BuildPlan(opts)
+				if mode == "off" {
+					if err != nil {
+						t.Fatal(err)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "overlaps private Podman storage") {
+					t.Fatalf("expected storage conflict, got %v", err)
+				}
+			})
+		}
 	}
 }

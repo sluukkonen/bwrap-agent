@@ -28,23 +28,6 @@ TMPDIR="$bootstrap_parent" XDG_RUNTIME_DIR=/unavailable "$binary" run \
     --instance integration-bootstrap-off --network host --podman off --tty never /bin/true
 assert_bootstrap_removed
 
-# Databases created with the old HOME/XDG paths must survive the new layout.
-legacy_state="$BWRAP_AGENT_STATE_HOME/instances/integration-legacy-home/state"
-"$binary" run --instance integration-legacy-home --network host --podman on --tty never \
-    --env "HOME=$legacy_state/home" --env "XDG_CONFIG_HOME=$legacy_state/config" \
-    --env "XDG_DATA_HOME=$legacy_state/data" --env "XDG_CACHE_HOME=$legacy_state/home/.cache" \
-    --env "XDG_STATE_HOME=$legacy_state/home/.local/state" /bin/sh -ec '
-        podman volume create legacy-home >/dev/null
-        volume=$(podman volume inspect --format "{{.Mountpoint}}" legacy-home)
-        printf retained >"$volume/marker"
-    '
-"$binary" run --instance integration-legacy-home --network host --podman on --tty never /bin/sh -ec '
-    volume=$(podman volume inspect --format "{{.Mountpoint}}" legacy-home)
-    test "$(cat "$volume/marker")" = retained
-'
-"$binary" instance delete integration-legacy-home --yes
-printf 'podman-legacy-home-ok\n'
-
 for mode in host private none; do
     instance="integration-ephemeral-$mode"
     if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then
@@ -95,6 +78,43 @@ for mode in host private none; do
     assert_bootstrap_removed
     "$binary" instance delete "$instance" --yes
 done
+
+# Deletion must recover from permission failures without recognizing a layout.
+# Create subordinate-owned private files, then move them into the old store path.
+for pending in no yes; do
+    instance="integration-old-storage-$pending"
+    TMPDIR="$bootstrap_parent" "$binary" run --instance "$instance" \
+        --network host --podman on --tty never /bin/sh -ec '
+            mkdir -p "$HOME/legacy-storage/storage/locked"
+            touch "$HOME/legacy-storage/storage/locked/data"
+            chmod 700 "$HOME/legacy-storage/storage/locked"
+            podman unshare chown -R 1:1 "$HOME/legacy-storage/storage/locked"
+        '
+    instance_root="$BWRAP_AGENT_STATE_HOME/instances/$instance"
+    mv "$instance_root/state/home/legacy-storage" "$instance_root/state/podman"
+    # Remove the empty new storage, so only the permission fallback can help.
+    rm -rf "$instance_root/state/home/.local/share/containers/storage"
+    if [ "$pending" = yes ]; then
+        failing_bin="$test_root/deletion-failing-bin"
+        mkdir -p "$failing_bin"
+        printf '#!/bin/sh\nexit 1\n' >"$failing_bin/podman"
+        chmod 755 "$failing_bin/podman"
+        if PATH="$failing_bin:$PATH" "$binary" instance delete "$instance" --yes >"$test_root/deletion-failure.log" 2>&1; then
+            echo 'deletion unexpectedly succeeded without rootless cleanup' >&2
+            exit 1
+        fi
+        grep -q 'Podman namespace removal failed' "$test_root/deletion-failure.log"
+        pending_root=$(find "$BWRAP_AGENT_STATE_HOME/instances" -maxdepth 1 -name ".deleting-$instance-*" -print)
+        test -d "$pending_root"
+        test ! -e "$pending_root/metadata.json"
+    else
+        pending_root="$instance_root"
+    fi
+    "$binary" instance delete "$instance" --yes
+    test ! -e "$pending_root"
+    assert_bootstrap_removed
+done
+printf 'podman-old-storage-delete-ok\n'
 
 # Failure after the bootstrap starts must retain the command status and remove
 # all bootstrap scratch files, just like a successful run.

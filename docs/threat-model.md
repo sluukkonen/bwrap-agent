@@ -21,8 +21,9 @@ agent and its containers.
   to the invoking unprivileged host user.
 - Under the default `write-through` workspace mode, the project itself is
   untrusted and disposable. A malicious agent can delete or rewrite it.
-- The per-instance `state/` directory is writable and untrusted. Do not store
-  unrelated secrets there. Its sibling `generated/` directory is launcher-owned
+- The per-instance `state/home/` directory is writable and untrusted. Do not store
+  unrelated secrets there. The instance's `generated/` directory, outside
+  `state/`, is launcher-owned
   and has no writable sandbox mount; individual configuration and executable
   snapshots are mounted read-only. Managed-store overlap checks prevent exposing
   that directory through writable project, Git, or bind aliases.
@@ -116,7 +117,17 @@ Runtime cleanup does not recursively delete sandbox-controlled persistent state.
 Bootstrap scratch files are removed after the outer process exits, but may
 remain after an uncatchable launcher termination and are never reused.
 
-The sandbox home has the same pathname as the host home but uses private instance storage. This does not expose the host home directory. Projects and explicit binds beneath home retain their selected access, and automatic configuration mounts remain read-only. The launcher validates private home and XDG mount destinations against symlink redirection and rejects mounts that would replace the private home. The original instance-state paths remain accessible; automatic configuration mounts retain their read-only views through those aliases too.
+The sandbox home has the same pathname as the host home but uses private
+instance storage. This does not expose the host home directory. Projects and
+explicit binds beneath home retain their selected access, and automatic
+configuration mounts remain read-only. The launcher validates private home and
+XDG mount destinations against symlink redirection and rejects mounts that
+would replace the private home. The original instance-state paths are not
+mounted, and automatic configuration is exposed only at its intended sandbox
+destination. Temporary files default to private tmpfs storage and disappear at
+exit. Launcher-generated Podman configuration is exposed through individual
+read-only files under `/run/bwrap-agent/podman-config/`; its container storage
+lives in the private home.
 
 ## Why the host Podman socket is excluded
 

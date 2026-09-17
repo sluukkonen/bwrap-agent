@@ -177,9 +177,9 @@ func TestLaunchLeavesMavenSettingsUnmanaged(t *testing.T) {
 				writeAgentTestFile(t, path, "stale credentials")
 			}
 			originals := map[string]string{
-				filepath.Join(plan.State, "config/maven/settings.xml"):      "instance configuration",
-				filepath.Join(plan.State, "home/.m2/settings.xml"):          "<settings><proxies/></settings>",
-				filepath.Join(plan.State, "home/.m2/settings-security.xml"): "instance master secret",
+				filepath.Join(plan.State, "home/.config/maven/settings.xml"): "instance configuration",
+				filepath.Join(plan.State, "home/.m2/settings.xml"):           "<settings><proxies/></settings>",
+				filepath.Join(plan.State, "home/.m2/settings-security.xml"):  "instance master secret",
 			}
 			for path, content := range originals {
 				writeAgentTestFile(t, path, content)

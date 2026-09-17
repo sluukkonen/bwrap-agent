@@ -44,7 +44,7 @@ func TestBuildPlanUsesHostHomeWithPrivateBacking(t *testing.T) {
 					t.Fatal(err)
 				}
 				expected := map[string]string{
-					"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, ".config"),
+					"HOME": home, "TMPDIR": "/tmp", "XDG_CONFIG_HOME": filepath.Join(home, ".config"),
 					"XDG_CACHE_HOME": filepath.Join(home, ".cache"),
 					"XDG_DATA_HOME":  filepath.Join(home, ".local", "share"),
 					"XDG_STATE_HOME": filepath.Join(home, ".local", "state"),
@@ -61,8 +61,6 @@ func TestBuildPlanUsesHostHomeWithPrivateBacking(t *testing.T) {
 					t.Fatalf("private home mount missing: %#v", plan.Bwrap)
 				}
 				for _, mount := range []string{
-					"--bind\x00" + filepath.Join(plan.State, "config") + "\x00" + expected["XDG_CONFIG_HOME"],
-					"--bind\x00" + filepath.Join(plan.State, "data") + "\x00" + expected["XDG_DATA_HOME"],
 					"--ro-bind\x00" + opts.ROBind[0] + "\x00" + opts.ROBind[0],
 					"--bind\x00" + opts.RWBind[0] + "\x00" + opts.RWBind[0],
 					"--ro-bind\x00" + filepath.Join(home, ".gitconfig") + "\x00" + filepath.Join(home, ".gitconfig"),
@@ -88,13 +86,13 @@ func TestBuildPlanUsesHostHomeWithPrivateBacking(t *testing.T) {
 				if !strings.Contains(string(passwd), ":"+home+":/bin/sh") {
 					t.Fatalf("passwd home mismatch: %s", passwd)
 				}
-				for _, relative := range []string{"home/saved", "config/saved", "data/saved"} {
+				for _, relative := range []string{"home/saved", "home/.config/saved", "home/.local/share/saved"} {
 					writeTestFile(t, filepath.Join(plan.State, relative), "keep me")
 				}
 				if _, err := BuildPlan(opts); err != nil {
 					t.Fatal(err)
 				}
-				for _, relative := range []string{"home/saved", "config/saved", "data/saved"} {
+				for _, relative := range []string{"home/saved", "home/.config/saved", "home/.local/share/saved"} {
 					content, err := os.ReadFile(filepath.Join(plan.State, relative))
 					if err != nil || string(content) != "keep me" {
 						t.Fatalf("instance data changed: %s: %q, %v", relative, content, err)
@@ -175,5 +173,71 @@ func TestHomeLayoutRejectsMountsCoveringHome(t *testing.T) {
 				t.Fatalf("error = %v", err)
 			}
 		})
+	}
+}
+
+func TestHomeLayoutOmitsStateAliases(t *testing.T) {
+	for _, podman := range []string{"off", "on"} {
+		t.Run(podman, func(t *testing.T) {
+			_, opts := homeLayoutFixture(t)
+			opts.Podman = podman
+			plan, err := BuildPlan(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, relative := range []string{"config", "data", "tmp", "podman"} {
+				if _, err := os.Lstat(filepath.Join(plan.State, relative)); !os.IsNotExist(err) {
+					t.Fatalf("created obsolete directory %s: %v", relative, err)
+				}
+				writeAgentTestFile(t, filepath.Join(plan.State, relative, "legacy"), "untouched")
+			}
+			plan, err = BuildPlan(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			homeMounts := 0
+			for index, arg := range plan.Bwrap {
+				switch arg {
+				case "--bind", "--ro-bind":
+					source, destination := plan.Bwrap[index+1], plan.Bwrap[index+2]
+					if pathWithin(plan.State, destination) {
+						t.Errorf("backing destination exposed: %s", destination)
+					}
+					if source == filepath.Join(plan.State, "home") {
+						homeMounts++
+					}
+				case "--setenv":
+					if strings.Contains(plan.Bwrap[index+2], plan.State) {
+						t.Errorf("backing path in sandbox environment: %s", plan.Bwrap[index+1])
+					}
+				}
+			}
+			if homeMounts != 1 {
+				t.Fatalf("private home mounted %d times", homeMounts)
+			}
+			for _, relative := range []string{"config", "data", "tmp", "podman"} {
+				content, err := os.ReadFile(filepath.Join(plan.State, relative, "legacy"))
+				if err != nil || string(content) != "untouched" {
+					t.Fatalf("legacy data modified: %q, %v", content, err)
+				}
+			}
+			for _, relative := range []string{"home/.config/legacy", "home/.local/share/legacy"} {
+				if _, err := os.Lstat(filepath.Join(plan.State, relative)); !os.IsNotExist(err) {
+					t.Fatalf("legacy data migrated to %s: %v", relative, err)
+				}
+			}
+		})
+	}
+}
+
+func TestHomeLayoutPreservesTemporaryDirectoryOverride(t *testing.T) {
+	_, opts := homeLayoutFixture(t)
+	opts.Env = []string{"TMPDIR=/var/tmp"}
+	plan, err := BuildPlan(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.LaunchEnv["TMPDIR"] != "/var/tmp" {
+		t.Fatalf("TMPDIR = %q", plan.LaunchEnv["TMPDIR"])
 	}
 }

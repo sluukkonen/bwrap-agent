@@ -127,17 +127,44 @@ The root begins as an empty tmpfs. The launcher adds:
 | `/sys` | policy-controlled | Podman uses the outer rootless sysfs view |
 | `/opt`, `/nix/store`, other tool roots | explicit read-only binds | opt-in runtime/tool compatibility |
 | project at its original absolute path | workspace-mode controlled | source and build outputs |
-| host home path | read-write private backing | instance `state/home`, with `state/config` at `~/.config` and `state/data` at `~/.local/share` |
-| managed instance `state/` at its original path | read-write | persistent backing paths and Podman storage |
+| host home path | read-write private backing | instance `state/home`, including standard XDG directories and Podman storage |
+| `/run/bwrap-agent/podman-config/` files | generated/read-only | launcher-owned Podman storage and engine configuration |
 | external Git common directory | policy-controlled | make linked worktrees functional |
 | `/proc`, `/dev` | new virtual filesystems | process and minimal device access; only host `/dev/net/tun` is added for nested pasta; `/dev/fuse` is not exposed |
 | `/tmp`, `/var/tmp`, `/run` | private | scratch data and API sockets |
 
 ### Sandbox home
 
-Sandbox `HOME` and the generated account home use the host home path. A symlinked host home is recreated as an alias to the canonical private home; passwd-incompatible names use a safe alias under `/run/bwrap-agent`. The private home and XDG roots are mounted before nested state, workspace, and explicit mounts. Mounts covering the whole home are rejected. Home mountpoints are checked against their private backing entries, without following sandbox-controlled symlinks. Landlock includes the private home and XDG mount roots alongside existing writable paths.
+Sandbox `HOME` and the generated account home use the host home path. A
+symlinked host home is recreated as an alias to the canonical private home;
+passwd-incompatible names use a safe alias under `/run/bwrap-agent`. The
+single private home mount precedes nested workspace and explicit mounts.
+Mounts covering the whole home are rejected. Home mountpoints are checked
+against their private backing entries, without following sandbox-controlled
+symlinks. Landlock permits the private home alongside selected writable
+project/bind paths and temporary/runtime directories; it does not grant access
+to the host state root.
 
-Resource preparation and credential seeding continue to use host backing paths. Launch planning translates automatic mounts and agent paths to their sandbox destinations; automatic read-only mounts also retain their existing state-path views for persisted absolute references. Existing `state/config` and `state/data` remain authoritative, with no data migration or deletion of covered home entries. Podman storage configuration pins the rootless storage path to its original `state/data/containers/storage` location rather than deriving a new database path from the visible XDG directory.
+Resource preparation and credential seeding use backing paths beneath
+`state/home`; launch planning translates automatic mounts and agent paths to
+sandbox destinations. No full-state mount or legacy configuration aliases are
+created. `TMPDIR` defaults to the private `/tmp` tmpfs and no persistent
+`state/tmp` is created. Older instance layouts require deletion and
+recreation; there is no migration or automatic reset.
+
+Podman stores containers under sandbox `~/.local/share/containers/storage`.
+Both storage root settings use that sandbox path; generated configuration
+files are prepared beneath `generated/podman/` and mounted individually
+read-only under `/run/bwrap-agent/podman-config/`. Project, external Git
+metadata, and explicit mounts may not overlap this storage directory,
+including its ancestors or descendants, while Podman is enabled. Runtime
+storage and sockets remain ephemeral. Instance deletion recognizes storage
+beneath the private home, probes its path without following symlinks, and uses
+the isolated Podman cleanup namespace for subordinate-UID files or
+inaccessible storage hierarchies. When direct deletion of unrecognized storage
+fails with a permission error, deletion tries isolated Podman cleanup and
+retries removal. This also supports deleting older layouts without migration
+or legacy-path detection.
 
 ### System configuration
 
@@ -376,14 +403,14 @@ manual replacement or repair; there is no automatic migration or reset.
 ### Instance ownership and deletion
 
 Managed instances are stored as `instances/NAME/metadata.json` plus
-`instances/NAME/state/`. The `state/` directory is mounted writable. Individual
-generated configuration and executable files are mounted read-only, and an
-existing OpenCode housekeeping file uses a writable backing file from
+`instances/NAME/state/`. Only `state/home/` is mounted as the private home.
+Individual generated configuration and executable files are mounted read-only,
+and an existing OpenCode housekeeping file uses a writable backing file from
 `control-masks/`. The containing instance directory and its metadata are not
 mounted by default. Strict, versioned metadata records the canonical project
-association and creation/last-use timestamps; the containing directory serves as
-the host-only advisory lock. A short registry lock serializes name allocation
-and deletion.
+association and creation/last-use timestamps; the containing directory serves
+as the host-only advisory lock. A short registry lock serializes name
+allocation and deletion.
 
 The default instance name is a sanitized project-directory basename. Project
 configuration may replace it, and `--instance` may replace the configured value.

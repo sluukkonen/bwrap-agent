@@ -223,7 +223,7 @@ func TestStateFileRejectsSymlinkedParent(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(state, "podman")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeStorageConfig(state); err == nil {
+	if _, err := writeStorageConfig(state, homeLayout{state: t.TempDir(), canonicalHome: "/home/test"}); err == nil {
 		t.Fatal("writeStorageConfig unexpectedly followed a symlinked parent")
 	}
 	entries, _ := os.ReadDir(outside)
@@ -526,7 +526,7 @@ func TestReadOnlyWorkspaceMode(t *testing.T) {
 	state := plan.State
 	for _, mount := range []string{
 		"--ro-bind\x00" + project + "\x00" + project,
-		"--bind\x00" + state + "\x00" + state,
+		"--bind\x00" + filepath.Join(state, "home") + "\x00" + mustHomeDirectory(t),
 	} {
 		if !strings.Contains(joined, mount) {
 			t.Errorf("missing mount %q in %#v", mount, plan.Bwrap)
@@ -763,7 +763,7 @@ func TestEnabledPodmanPlan(t *testing.T) {
 	if !strings.Contains(joined, "--ro-bind\x00"+filepath.Join(filepath.Dir(plan.State), "generated/executables/init")+"\x00/run/bwrap-agent/init") || strings.Contains(joined, "--file") || len(plan.Launcher) != 5 || plan.Launcher[1] != internalLaunchMode || plan.Launcher[2] != "--seccomp-profile" || plan.Launcher[3] != seccompProfilePodman || plan.Launcher[4] != "--" {
 		t.Fatalf("private sandbox init is missing: %#v", plan.Bwrap)
 	}
-	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "podman", "config", "containers.conf"))
+	containersConfig, err := os.ReadFile(filepath.Join(filepath.Dir(plan.State), "generated", "podman", "containers.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -829,7 +829,7 @@ func TestCopyOnWritePodmanDisablesNestedSELinuxLabeling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "podman", "config", "containers.conf"))
+	containersConfig, err := os.ReadFile(filepath.Join(filepath.Dir(plan.State), "generated", "podman", "containers.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -844,7 +844,7 @@ func TestPrivatePodmanPlanConfiguresContainerProxyRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	containersConfig, err := os.ReadFile(filepath.Join(plan.State, "podman", "config", "containers.conf"))
+	containersConfig, err := os.ReadFile(filepath.Join(filepath.Dir(plan.State), "generated", "podman", "containers.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}

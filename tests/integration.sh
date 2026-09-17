@@ -155,6 +155,9 @@ for layout_mode in write-through copy-on-write read-only; do
             test "$XDG_DATA_HOME" = "$HOME/.local/share"
             test "$XDG_CACHE_HOME" = "$HOME/.cache"
             test "$XDG_STATE_HOME" = "$HOME/.local/state"
+            test "$TMPDIR" = /tmp
+            printf temporary >"$TMPDIR/home-layout-marker"
+            printf temporary >/var/tmp/home-layout-marker
             test "$(cat "$HOME/tools/value")" = tool-content
             test ! -e "$HOME/host-secret"
             test "$(git config --global user.name)" = "Home Layout"
@@ -177,15 +180,31 @@ for layout_mode in write-through copy-on-write read-only; do
     test "$(cat "$layout_home/tools/value")" = tool-content
     test "$(cat "$layout_home/writable/value")" = writable
     test "$(cat "$layout_state/instances/layout-$layout_mode/state/home/persistent")" = private
-    test "$(cat "$layout_state/instances/layout-$layout_mode/state/config/persistent")" = config
-    test "$(cat "$layout_state/instances/layout-$layout_mode/state/data/persistent")" = data
+    test "$(cat "$layout_state/instances/layout-$layout_mode/state/home/.config/persistent")" = config
+    test "$(cat "$layout_state/instances/layout-$layout_mode/state/home/.local/share/persistent")" = data
+    backing_state="$layout_state/instances/layout-$layout_mode/state"
+    for old_directory in config data tmp podman; do
+        test ! -e "$backing_state/$old_directory"
+        mkdir "$backing_state/$old_directory"
+        printf legacy >"$backing_state/$old_directory/legacy"
+    done
     HOME="$layout_home" BWRAP_AGENT_STATE_HOME="$layout_state" "$binary" \
         run --no-config --project "$layout_home/project" --instance "layout-$layout_mode" \
+        --env "BACKING_STATE=$backing_state" \
         --podman off --network host --tty never /bin/sh -ec '
+            test ! -e "$BACKING_STATE"
+            test ! -e "$XDG_CONFIG_HOME/legacy"
+            test ! -e "$XDG_DATA_HOME/legacy"
+            test ! -e "$TMPDIR/legacy"
+            test ! -e "$TMPDIR/home-layout-marker"
+            test ! -e /var/tmp/home-layout-marker
             test "$(cat "$HOME/persistent")" = private
             test "$(cat "$XDG_CONFIG_HOME/persistent")" = config
             test "$(cat "$XDG_DATA_HOME/persistent")" = data
         '
+    for old_directory in config data tmp podman; do
+        test "$(cat "$backing_state/$old_directory/legacy")" = legacy
+    done
 done
 ln -s "$layout_home" "$test_root/layout-home-alias"
 HOME="$test_root/layout-home-alias" XDG_CONFIG_HOME="$layout_config" BWRAP_AGENT_STATE_HOME="$layout_state" "$binary" \

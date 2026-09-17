@@ -9,6 +9,8 @@ import (
 )
 
 type filesystemInputs struct {
+	storageConfig     string
+	containersConfig  string
 	home              homeLayout
 	bwrap             string
 	podman            bool
@@ -32,7 +34,7 @@ type filesystemLayout struct {
 // the generated directory and must clear it if plan construction fails.
 // Options and identity must already be normalized and validated by buildPlan.
 func buildFilesystemLayout(opts Options, identity instanceIdentity, input filesystemInputs) (filesystemLayout, error) {
-	project, state := identity.Project, identity.State
+	project := identity.Project
 	bwrap := []string{input.bwrap, "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup-try", "--die-with-parent"}
 	if !input.podman {
 		bwrap = append(bwrap, "--unshare-user", "--disable-userns")
@@ -99,14 +101,12 @@ func buildFilesystemLayout(opts Options, identity instanceIdentity, input filesy
 		}
 		mounts.mount(option, "/sys", "/sys")
 	}
-	for _, root := range input.home.roots() {
-		mounts.mount("--bind", root.Source, root.Destination)
-	}
+	mounts.mount("--bind", input.home.backingHome(), input.home.canonicalHome)
 	if input.home.home != input.home.canonicalHome {
 		mounts.parentDirs(input.home.home)
 		mounts.operation("--symlink", input.home.canonicalHome, input.home.home)
 	}
-	for _, path := range []string{state, project, identity.GitCommon} {
+	for _, path := range []string{project, identity.GitCommon} {
 		if path != "" {
 			if err := input.home.validateMount(path, path); err != nil {
 				return filesystemLayout{}, err
@@ -137,7 +137,6 @@ func buildFilesystemLayout(opts Options, identity instanceIdentity, input filesy
 			mounts.mount("--ro-bind", identity.GitCommon, identity.GitCommon)
 		}
 	}
-	mounts.mount("--bind", state, state)
 	if input.passwdHomeAliased {
 		mounts.operation("--symlink", input.home.home, sandboxPasswdHome)
 	}
@@ -174,7 +173,8 @@ func buildFilesystemLayout(opts Options, identity instanceIdentity, input filesy
 		if err := input.home.mountResource(&mounts, input.podmanMount); err != nil {
 			return filesystemLayout{}, err
 		}
-		mounts.mount("--ro-bind", input.podmanMount.Source, filepath.Join(state, "home", ".config", "containers"))
+		mounts.mount("--ro-bind", input.storageConfig, filepath.Join(sandboxPodmanConfigDirectory, "storage.conf"))
+		mounts.mount("--ro-bind", input.containersConfig, filepath.Join(sandboxPodmanConfigDirectory, "containers.conf"))
 	}
 	self, err := os.Executable()
 	if err != nil {

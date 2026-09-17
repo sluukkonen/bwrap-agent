@@ -57,7 +57,7 @@ func TestOpenCodeUsesReadOnlyConfigAndSeedsAuthOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	mounts := mountMap(setup.Mounts)
-	destination := filepath.Join(context.state, "config", "opencode")
+	destination := filepath.Join(context.state, "home", ".config", "opencode")
 	wantSource, _ := filepath.EvalSymlinks(filepath.Join(config, "opencode"))
 	if mounts[destination] != wantSource {
 		t.Fatalf("OpenCode config mount = %q, want %q", mounts[destination], wantSource)
@@ -65,7 +65,7 @@ func TestOpenCodeUsesReadOnlyConfigAndSeedsAuthOnce(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(destination, "opencode.jsonc")); !os.IsNotExist(err) {
 		t.Fatalf("host config was copied into instance state: %v", err)
 	}
-	authPath := filepath.Join(context.state, "data", "opencode", "auth.json")
+	authPath := filepath.Join(context.state, "home", ".local", "share", "opencode", "auth.json")
 	if content, err := os.ReadFile(authPath); err != nil || string(content) != `{"token":"first"}` {
 		t.Fatalf("seeded auth = %q, %v", content, err)
 	}

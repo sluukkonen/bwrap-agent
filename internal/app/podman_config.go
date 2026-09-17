@@ -11,28 +11,42 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-func writeStorageConfig(state string) (string, error) {
-	if _, err := ensureStateDirectory(state, "podman/config", 0o700); err != nil {
-		return "", err
+const sandboxPodmanConfigDirectory = "/run/bwrap-agent/podman-config"
+
+// User mounts must not replace any part of the instance-owned container store.
+func validatePodmanStorageMounts(layout homeLayout, identity instanceIdentity) error {
+	storage := layout.destination(filepath.Join(layout.state, podmanStorageRelative))
+	paths := append([]string{identity.Project, identity.GitCommon}, identity.ROBind...)
+	paths = append(paths, identity.RWBind...)
+	for _, destination := range paths {
+		if destination == "" {
+			continue
+		}
+		if pathWithin(layout.home, destination) {
+			relative, _ := filepath.Rel(layout.home, destination)
+			destination = filepath.Join(layout.canonicalHome, relative)
+		}
+		if pathsOverlap(destination, storage) {
+			return fmt.Errorf("mount %s overlaps private Podman storage %s; select a non-overlapping mount or disable Podman", destination, storage)
+		}
 	}
-	graphRoot, err := ensureStateDirectory(state, "podman/storage", 0o700)
+	return nil
+}
+
+func writeStorageConfig(generated string, layout homeLayout) (string, error) {
+	backing, err := ensureStateDirectory(layout.state, podmanStorageRelative, 0o700)
 	if err != nil {
 		return "", err
 	}
-	runRoot := filepath.Join(sandboxRuntimeDirectory, "containers")
-	graphJSON, _ := json.Marshal(graphRoot)
-	// Rootless storage versions that ignore graphroot previously derived this
-	// path from state/data. Keep that absolute path stable when the sandbox's
-	// XDG_DATA_HOME moves, so existing databases and containers remain usable.
-	rootlessJSON, _ := json.Marshal(filepath.Join(state, "data", "containers", "storage"))
-	runJSON, _ := json.Marshal(runRoot)
-	content := fmt.Sprintf("[storage]\ndriver = \"overlay\"\ngraphroot = %s\nrootless_storage_path = %s\nrunroot = %s\n\n[storage.options.overlay]\nignore_chown_errors = \"false\"\n", graphJSON, rootlessJSON, runJSON)
-	return writeStateFile(state, "podman/config/storage.conf", []byte(content), 0o600)
+	graphJSON, _ := json.Marshal(layout.destination(backing))
+	runJSON, _ := json.Marshal(filepath.Join(sandboxRuntimeDirectory, "containers"))
+	content := fmt.Sprintf("[storage]\ndriver = \"overlay\"\ngraphroot = %s\nrootless_storage_path = %s\nrunroot = %s\n\n[storage.options.overlay]\nignore_chown_errors = \"false\"\n", graphJSON, graphJSON, runJSON)
+	return writeStateFile(generated, "podman/storage.conf", []byte(content), 0o444)
 }
 
 // preparePodmanConfigMount keeps user configuration read-only while allowing
 // Podman to load its own configuration files and drop-ins normally.
-func preparePodmanConfigMount(context hostContext) (resourceMount, error) {
+func preparePodmanConfigMount(context hostContext, generated string) (resourceMount, error) {
 	configHome, err := os.UserConfigDir()
 	if err != nil {
 		return resourceMount{}, fmt.Errorf("locate Podman user configuration: %w", err)
@@ -42,20 +56,20 @@ func preparePodmanConfigMount(context hostContext) (resourceMount, error) {
 		return resourceMount{}, fmt.Errorf("resolve Podman user configuration: %w", err)
 	}
 	if !found {
-		// Hide legacy generated configuration even on reused instances.
-		source, err = ensureStateDirectory(context.state, "podman/config/empty-user-config", 0o700)
+		// Keep user configuration read-only even when there is no host source.
+		source, err = ensureStateDirectory(generated, "podman/empty-user-config", 0o700)
 		if err != nil {
 			return resourceMount{}, err
 		}
 	}
-	mount := resourceMount{Source: source, Destination: filepath.Join(context.state, "config", "containers")}
+	mount := resourceMount{Source: source, Destination: filepath.Join(context.state, "home", ".config", "containers")}
 	if err := validateStateMountpoint(context.state, mount.Destination, mount.Source); err != nil {
 		return resourceMount{}, err
 	}
 	return mount, nil
 }
 
-func writeContainersConfig(state string, privateNetwork, disableLabeling bool) (string, error) {
+func writeContainersConfig(generated string, privateNetwork, disableLabeling bool) (string, error) {
 	// Empty paths reset inherited host values and let Podman derive them from
 	// its effective store. In particular, older storage libraries use the
 	// instance XDG data directory even with an explicit graphroot setting.
@@ -92,5 +106,5 @@ func writeContainersConfig(state string, privateNetwork, disableLabeling bool) (
 	if err != nil {
 		return "", fmt.Errorf("encode Podman sandbox configuration: %w", err)
 	}
-	return writeStateFile(state, "podman/config/containers.conf", content, 0o600)
+	return writeStateFile(generated, "podman/containers.conf", content, 0o444)
 }

@@ -178,7 +178,7 @@ func TestPodmanBootstrapPlanBoundary(t *testing.T) {
 		"--perms\x000700\x00--tmpfs\x00" + sandboxRuntimeDirectory,
 		"--setenv\x00HOME\x00/custom/home", "--setenv\x00TMPDIR\x00/custom/tmp",
 		"--unsetenv\x00CONTAINERS_GRAPHROOT", "--unsetenv\x00CONTAINERS_RUNROOT", "--unsetenv\x00CONTAINERS_CONF",
-		"--setenv\x00CONTAINERS_STORAGE_CONF\x00" + filepath.Join(plan.State, "podman/config/storage.conf"),
+		"--setenv\x00CONTAINERS_STORAGE_CONF\x00" + filepath.Join(sandboxPodmanConfigDirectory, "storage.conf"),
 	} {
 		if !strings.Contains(joined, fragment) {
 			t.Errorf("sandbox boundary missing %q", fragment)

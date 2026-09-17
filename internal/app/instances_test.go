@@ -205,7 +205,7 @@ func TestDeletionTombstoneMatchingIsStrict(t *testing.T) {
 
 func TestRemoveInstanceTombstoneUsesPodmanNamespace(t *testing.T) {
 	tombstone := filepath.Join(t.TempDir(), ".deleting-example-0123456789abcdef")
-	if err := os.MkdirAll(filepath.Join(tombstone, "state", "podman", "storage"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(tombstone, "state", podmanStorageRelative), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	directCalled := false
@@ -227,7 +227,7 @@ func TestRemoveInstanceTombstoneUsesPodmanNamespace(t *testing.T) {
 
 func TestRemoveInstanceTombstoneFallsBackToDirectRemoval(t *testing.T) {
 	tombstone := filepath.Join(t.TempDir(), ".deleting-example-0123456789abcdef")
-	if err := os.MkdirAll(filepath.Join(tombstone, "state", "podman", "storage"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(tombstone, "state", podmanStorageRelative), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	podmanErr := errors.New("podman cleanup failed")
@@ -664,5 +664,104 @@ func TestCorruptManagedMetadataFailsClearly(t *testing.T) {
 	}
 	if _, err := managedInstanceSnapshots(); err == nil || !strings.Contains(err.Error(), "invalid instance") {
 		t.Fatalf("corrupt metadata list = %v", err)
+	}
+}
+
+func TestPodmanCleanupProbeDoesNotFollowHomeSymlinks(t *testing.T) {
+	for _, relative := range []string{"state", "state/home", "state/home/.local", "state/home/.local/share", "state/home/.local/share/containers", "state/" + podmanStorageRelative} {
+		t.Run(relative, func(t *testing.T) {
+			tombstone := t.TempDir()
+			target := filepath.Join(tombstone, relative)
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			outside := t.TempDir()
+			suffix, _ := filepath.Rel(relative, "state/"+podmanStorageRelative)
+			if err := os.MkdirAll(filepath.Join(outside, suffix), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, target); err != nil {
+				t.Fatal(err)
+			}
+			needed, err := tombstoneNeedsPodmanCleanup(tombstone)
+			if err != nil || needed {
+				t.Fatalf("followed a symlink: needed=%t err=%v", needed, err)
+			}
+		})
+	}
+}
+
+func TestPodmanCleanupProbeHandlesInaccessibleHome(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("requires an unprivileged user")
+	}
+	tombstone := t.TempDir()
+	home := filepath.Join(tombstone, "state", "home")
+	if err := os.MkdirAll(filepath.Join(tombstone, "state", podmanStorageRelative), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(home, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+	needed, err := tombstoneNeedsPodmanCleanup(tombstone)
+	if err != nil || !needed {
+		t.Fatalf("needed=%t err=%v", needed, err)
+	}
+}
+
+func TestDeletionPermissionFallback(t *testing.T) {
+	for _, scenario := range []struct {
+		name                    string
+		initial, cleanup, retry error
+		recognized              bool
+		wantCalls               string
+	}{
+		{name: "access", initial: syscall.EACCES, wantCalls: "direct,podman,direct"},
+		{name: "permission", initial: syscall.EPERM, wantCalls: "direct,podman,direct"},
+		{name: "ordinary", wantCalls: "direct"},
+		{name: "unrelated", initial: syscall.EIO, wantCalls: "direct"},
+		{name: "failed-cleanup", initial: syscall.EACCES, cleanup: syscall.ENOENT, retry: syscall.EACCES, wantCalls: "direct,podman,direct"},
+		{name: "direct-recovery", initial: syscall.EACCES, cleanup: syscall.ENOENT, wantCalls: "direct,podman,direct"},
+		{name: "already-attempted", recognized: true, initial: syscall.EACCES, cleanup: syscall.ENOENT, wantCalls: "podman,direct"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			tombstone := t.TempDir()
+			if scenario.recognized {
+				if err := os.MkdirAll(filepath.Join(tombstone, "state", podmanStorageRelative), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var calls []string
+			directCalls := 0
+			err := removeInstanceTombstoneWith(tombstone, func(path string) error {
+				calls = append(calls, "direct")
+				directCalls++
+				failure := scenario.initial
+				if directCalls > 1 {
+					failure = scenario.retry
+				}
+				if failure != nil {
+					return &os.PathError{Op: "remove", Path: path, Err: failure}
+				}
+				return nil
+			}, func(string) error {
+				calls = append(calls, "podman")
+				return scenario.cleanup
+			})
+			if strings.Join(calls, ",") != scenario.wantCalls {
+				t.Fatalf("calls = %v", calls)
+			}
+			wantErr := scenario.initial
+			if directCalls > 1 {
+				wantErr = scenario.retry
+			}
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("error = %v, want %v", err, wantErr)
+			}
+			if wantErr != nil && scenario.cleanup != nil && !errors.Is(err, scenario.cleanup) {
+				t.Fatalf("lost cleanup error: %v", err)
+			}
+		})
 	}
 }

@@ -117,10 +117,10 @@ func seedAgentFile(context hostContext, source, destination string) error {
 
 func prepareOpenCode(context hostContext, config bool) (agentSetup, error) {
 	setup := agentSetup{Environment: map[string]string{}}
-	if _, err := ensureStateDirectory(context.state, "config/opencode", 0o700); err != nil {
+	if _, err := ensureStateDirectory(context.state, "home/.config/opencode", 0o700); err != nil {
 		return setup, err
 	}
-	if _, err := ensureStateDirectory(context.state, "data/opencode", 0o700); err != nil {
+	if _, err := ensureStateDirectory(context.state, "home/.local/share/opencode", 0o700); err != nil {
 		return setup, err
 	}
 	if !config {
@@ -136,10 +136,10 @@ func prepareOpenCode(context hostContext, config bool) (agentSetup, error) {
 		return setup, err
 	}
 	if found {
-		setup.Mounts = append(setup.Mounts, resourceMount{Source: configSource, Destination: filepath.Join(context.state, "config", "opencode")})
+		setup.Mounts = append(setup.Mounts, resourceMount{Source: configSource, Destination: filepath.Join(context.state, "home", ".config", "opencode")})
 	}
 	dataBase := envValue(context.hostEnv, "XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
-	if err := seedAgentFile(context, filepath.Join(dataBase, "opencode", "auth.json"), "data/opencode/auth.json"); err != nil {
+	if err := seedAgentFile(context, filepath.Join(dataBase, "opencode", "auth.json"), "home/.local/share/opencode/auth.json"); err != nil {
 		return setup, err
 	}
 	for _, override := range []struct {

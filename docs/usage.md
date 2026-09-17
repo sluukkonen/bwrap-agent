@@ -7,6 +7,7 @@ Networked agent examples assume you have configured access to your provider.
 Run `./bin/bwrap-agent run --help` for the complete command-line option
 reference.
 
+- [Sandbox home](#sandbox-home)
 - [Configuration and approval](#configuration)
 - [Workspace modes and protection](#workspace-modes-and-protection)
 - [Agent and Git configuration](#agent-and-git-configuration)
@@ -18,9 +19,24 @@ reference.
 
 ## Sandbox home
 
-The sandbox uses the same `$HOME` path as the host, with private contents stored per instance. For example, `/home/alice` inside the sandbox is backed by the instance's `state/home` directory. Host home files are visible only through the project, explicit binds, or automatic configuration mounts. A configuration entry such as `ro_bind = ["~/tools"]` therefore appears at sandbox `~/tools` as well.
+The sandbox uses the same `$HOME` path as the host, with private contents
+stored per instance. For example, `/home/alice` inside the sandbox is backed
+by the instance's `state/home` directory. Host home files are visible only
+through the project, explicit binds, or automatic configuration mounts. A
+configuration entry such as `ro_bind = ["~/tools"]` therefore appears at
+sandbox `~/tools` as well.
 
-Sandbox XDG directories use the standard home layout: `~/.config`, `~/.cache`, `~/.local/share`, and `~/.local/state`. Existing `state/config` and `state/data` directories back `~/.config` and `~/.local/share`, so existing settings, credentials, and sessions require no migration. These mounts cover any old entries at `state/home/.config` and `state/home/.local/share` without deleting them. Host XDG settings still select the configuration sources to expose. Explicit environment overrides retain their normal precedence.
+Sandbox XDG directories use the standard home layout: `~/.config`, `~/.cache`,
+`~/.local/share`, and `~/.local/state`. All persistent contents live beneath
+`state/home` on the host. The instance state directory is not mounted at its
+original path, and there are no legacy config/data aliases. Host XDG settings
+still select the configuration sources to expose. `TMPDIR` defaults to the
+private `/tmp` tmpfs; `/tmp` and `/var/tmp` are discarded when the sandbox
+exits. Explicit environment overrides retain their normal precedence.
+
+Delete and recreate instances from older layouts before using this version.
+There is no migration, compatibility fallback, or automatic deletion of
+existing instance data.
 
 ## Configuration
 
@@ -333,9 +349,9 @@ The launcher holds a host-only advisory lock for the instance; the kernel
 releases it automatically when bwrap-agent exits or crashes.
 
 Managed instances live under `~/.local/state/bwrap-agent/instances`. The
-host-only instance directory contains `metadata.json` plus the
-sandbox-writable `state/` directory. List instances, including their allocated
-disk usage and running status, with:
+host-only instance directory contains `metadata.json`, launcher-owned
+`generated/` files, and `state/home/` backing the writable sandbox home. List
+instances, including their allocated disk usage and running status, with:
 
 ```console
 $ ./bin/bwrap-agent instance list
@@ -489,13 +505,18 @@ exits. Require Podman with `--podman on` or disable the integration with
 `--podman off`.
 
 When Podman integration is enabled, the host's `$XDG_CONFIG_HOME/containers`
-directory (or `~/.config/containers`) is mounted read-only at the sandbox's
-corresponding configuration path and `$HOME/.config/containers` for tools that
-use the home path. Podman reads user settings and drop-ins there, including
-`registries.conf` and `network.pasta_options` such as `["--ipv4-only"]`. The
-entire directory is readable, including any credentials stored there; commands
-cannot update these host files from the sandbox. Referenced files outside the
-directory are not automatically exposed.
+directory (or `~/.config/containers`) is mounted read-only at sandbox
+`$HOME/.config/containers`. Podman reads user settings and drop-ins there,
+including `registries.conf` and `network.pasta_options` such as
+`["--ipv4-only"]`. The entire directory is readable, including any credentials
+stored there; commands cannot update these host files from the sandbox.
+Referenced files outside the directory are not automatically exposed.
+
+When Podman is enabled, project and explicit mounts must not overlap
+`~/.local/share/containers/storage` (including ancestors or descendants).
+Choose a non-overlapping mount or disable Podman. Instance deletion retries
+permission-related failures through isolated Podman cleanup, including for
+older instance layouts; it does not migrate them.
 
 A generated configuration override keeps storage, engine state, volumes, and
 network configuration inside the instance, selects local Podman with cgroupfs

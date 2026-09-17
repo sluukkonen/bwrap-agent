@@ -23,7 +23,7 @@ func prepareGitConfigMounts(context hostContext, enabled bool) ([]resourceMount,
 	var mounts []resourceMount
 	for _, candidate := range []resourceMount{
 		{Source: filepath.Join(home, ".gitconfig"), Destination: filepath.Join(context.state, "home", ".gitconfig")},
-		{Source: filepath.Join(configHome, "git", "config"), Destination: filepath.Join(context.state, "config", "git", "config")},
+		{Source: filepath.Join(configHome, "git", "config"), Destination: filepath.Join(context.state, "home", ".config", "git", "config")},
 	} {
 		source, found, err := context.sources.resolveSource(candidate.Source, false, false)
 		if err != nil {

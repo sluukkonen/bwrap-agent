@@ -433,14 +433,6 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	if opts.Network == "host" && len(opts.NetworkAllow) > 0 {
 		return LaunchPlan{}, errors.New("--network-allow cannot be used with --network=host")
 	}
-	if err := secureMkdir(state, 0o700); err != nil {
-		return LaunchPlan{}, err
-	}
-	for _, child := range []string{"home", "tmp", "podman"} {
-		if _, err := ensureStateDirectory(state, child, 0o700); err != nil {
-			return LaunchPlan{}, err
-		}
-	}
 	bwrapBin, err := requireProgram("bwrap")
 	if err != nil {
 		return LaunchPlan{}, err
@@ -466,15 +458,18 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	}
 	var storageConfig, containersConfig, hostAccount string
 	if podmanBin != "" {
+		if err := validatePodmanStorageMounts(layout, identity); err != nil {
+			return LaunchPlan{}, err
+		}
 		hostAccount, err = hostAccountName(hostEnv)
 		if err != nil {
 			return LaunchPlan{}, err
 		}
-		storageConfig, err = writeStorageConfig(state)
+		storageConfig, err = writeStorageConfig(generated, layout)
 		if err != nil {
 			return LaunchPlan{}, err
 		}
-		containersConfig, err = writeContainersConfig(state, opts.Network == "private", workspaceMode == "copy-on-write")
+		containersConfig, err = writeContainersConfig(generated, opts.Network == "private", workspaceMode == "copy-on-write")
 		if err != nil {
 			return LaunchPlan{}, err
 		}
@@ -516,13 +511,8 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	}
 	var podmanMount resourceMount
 	if podmanBin != "" {
-		podmanMount, err = preparePodmanConfigMount(host)
+		podmanMount, err = preparePodmanConfigMount(host, generated)
 		if err != nil {
-			return LaunchPlan{}, err
-		}
-		// containers/image versions that ignore XDG_CONFIG_HOME look here for
-		// registries.conf, policy.json, and related user configuration.
-		if err := validateStateMountpoint(state, filepath.Join(state, "home", ".config", "containers"), podmanMount.Source); err != nil {
 			return LaunchPlan{}, err
 		}
 	}
@@ -562,7 +552,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	accountName, _ := currentAccount()
 	input := environmentInputs{
 		home: layout, hostEnv: hostEnv, identity: identity, defaultAccount: accountName, hostAccount: hostAccount,
-		podman: podmanBin != "", storageConfig: storageConfig, containersConfig: containersConfig,
+		podman: podmanBin != "", storageConfig: filepath.Join(sandboxPodmanConfigDirectory, "storage.conf"), containersConfig: filepath.Join(sandboxPodmanConfigDirectory, "containers.conf"),
 		agent: agent.Environment, command: command.Environment,
 	}
 	environment, err := buildSandboxEnvironment(opts, input)
@@ -570,8 +560,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		return LaunchPlan{}, err
 	}
 	if landlockStatus.Effective == "enabled" {
-		hostWritePaths := []string{state}
-		hostWritePaths = append(hostWritePaths, identity.RWBind...)
+		hostWritePaths := append([]string{}, identity.RWBind...)
 		if workspaceMode != "read-only" {
 			hostWritePaths = append(hostWritePaths, project)
 			if identity.GitCommon != "" {
@@ -581,7 +570,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		// Bubblewrap creates these paths in the sandbox independently of whether
 		// matching paths exist on the host. They are present by the time the
 		// sandbox runtime applies Landlock.
-		writePaths, err := prepareLandlockWritePaths(hostWritePaths, []string{layout.canonicalHome, filepath.Join(layout.canonicalHome, ".config"), filepath.Join(layout.canonicalHome, ".local", "share"), "/tmp", "/var/tmp", "/run", "/dev"})
+		writePaths, err := prepareLandlockWritePaths(hostWritePaths, []string{layout.canonicalHome, "/tmp", "/var/tmp", "/run", "/dev"})
 		if err != nil {
 			return LaunchPlan{}, fmt.Errorf("prepare Landlock write paths: %w", err)
 		}
@@ -596,7 +585,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		home: layout, bwrap: bwrapBin, podman: podmanBin != "", usePTY: usePTY,
 		generated: generated, generatedEtc: generatedEtc, passwdHomeAliased: passwdHomeAliased,
 		gitMounts: gitConfig, agentMounts: agent.Mounts, podmanMount: podmanMount,
-		commandMounts: command.Mounts,
+		commandMounts: command.Mounts, storageConfig: storageConfig, containersConfig: containersConfig,
 	})
 	if err != nil {
 		return LaunchPlan{}, err

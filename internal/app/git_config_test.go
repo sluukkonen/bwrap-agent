@@ -131,7 +131,7 @@ func TestGitConfigSources(t *testing.T) {
 			}
 			for _, mount := range mounts {
 				expected := source
-				if mount.Destination == filepath.Join(context.state, "config", "git", "config") {
+				if mount.Destination == filepath.Join(context.state, "home", ".config", "git", "config") {
 					expected = xdgSource
 				} else if mount.Destination != destination {
 					t.Fatalf("unexpected destination: %#v", mount)
@@ -204,8 +204,8 @@ func TestGitConfigPlan(t *testing.T) {
 				}
 				joined := strings.Join(plan.Bwrap, "\x00")
 				for _, mount := range []resourceMount{
-					{source, filepath.Join(plan.State, "home", ".gitconfig"), false},
-					{filepath.Join(config, "git", "config"), filepath.Join(plan.State, "config", "git", "config"), false},
+					{source, filepath.Join(home, ".gitconfig"), false},
+					{filepath.Join(config, "git", "config"), filepath.Join(home, ".config", "git", "config"), false},
 				} {
 					resolved, _ := filepath.EvalSymlinks(mount.Source)
 					index := strings.Index(joined, "--ro-bind\x00"+resolved+"\x00"+mount.Destination)

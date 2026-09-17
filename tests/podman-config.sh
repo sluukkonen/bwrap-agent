@@ -50,9 +50,13 @@ for mode in host private none; do
             test -z "${CONTAINERS_CONF:-}"
             test -r "$CONTAINERS_CONF_OVERRIDE"
             test -r "$CONTAINERS_STORAGE_CONF"
+            test "$CONTAINERS_CONF_OVERRIDE" = /run/bwrap-agent/podman-config/containers.conf
+            test "$CONTAINERS_STORAGE_CONF" = /run/bwrap-agent/podman-config/storage.conf
+            if (printf changed >"$CONTAINERS_CONF_OVERRIDE") 2>/dev/null; then exit 1; fi
+            if (printf changed >"$CONTAINERS_STORAGE_CONF") 2>/dev/null; then exit 1; fi
             if (printf changed >"$XDG_CONFIG_HOME/containers/containers.conf") 2>/dev/null; then exit 1; fi
             podman info --format "{{.Registries}}" | grep -q inherited-registry.invalid
-            podman info --format "{{.Store.GraphRoot}}" | grep -F "$BWRAP_AGENT_INSTANCE/state/"
+            test "$(podman info --format "{{.Store.GraphRoot}}")" = "$HOME/.local/share/containers/storage"
             result=$(curl --fail --silent --show-error --unix-socket "${DOCKER_HOST#unix://}" http://d/v5.0.0/libpod/info)
             printf %s "$result" | grep -q inherited-registry.invalid
             case "$CONFIG_TEST_NETWORK" in
