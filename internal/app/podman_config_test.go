@@ -187,3 +187,27 @@ func TestPodmanConfigPlan(t *testing.T) {
 		t.Fatalf("host config changed: %q, %v", got, err)
 	}
 }
+
+func TestStorageConfigKeepsRootlessBackingPath(t *testing.T) {
+	state := t.TempDir()
+	path, err := writeStorageConfig(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Storage struct {
+			GraphRoot           string `toml:"graphroot"`
+			RootlessStoragePath string `toml:"rootless_storage_path"`
+		} `toml:"storage"`
+	}
+	if err := toml.Unmarshal(content, &config); err != nil {
+		t.Fatal(err)
+	}
+	if config.Storage.GraphRoot != filepath.Join(state, "podman", "storage") || config.Storage.RootlessStoragePath != filepath.Join(state, "data", "containers", "storage") {
+		t.Fatalf("storage paths do not preserve existing backing directories: %s", content)
+	}
+}

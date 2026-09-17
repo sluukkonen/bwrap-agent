@@ -461,15 +461,19 @@ func TestBuildPlanWithoutPodman(t *testing.T) {
 }
 
 func TestBuildPlanMountsPasswdSafeHomeAlias(t *testing.T) {
-	stateHome := filepath.Join(t.TempDir(), "state:home")
-	t.Setenv("BWRAP_AGENT_STATE_HOME", stateHome)
+	hostHome := filepath.Join(t.TempDir(), "host:home")
+	if err := os.Mkdir(hostHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", hostHome)
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
 	plan, err := BuildPlan(Options{
 		Project: ".", Instance: "passwd-home-alias", Network: "host", Podman: "off", TTY: "never", Command: []string{"/bin/true"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	realHome := filepath.Join(plan.State, "home")
+	realHome := hostHome
 	if plan.LaunchEnv["HOME"] != realHome {
 		t.Fatalf("HOME = %q, want %q", plan.LaunchEnv["HOME"], realHome)
 	}
@@ -480,7 +484,7 @@ func TestBuildPlanMountsPasswdSafeHomeAlias(t *testing.T) {
 	if !strings.Contains(string(passwd), ":"+sandboxPasswdHome+":/bin/sh") {
 		t.Fatalf("generated passwd omitted safe home alias: %q", passwd)
 	}
-	if joined := strings.Join(plan.Bwrap, "\x00"); !strings.Contains(joined, "--bind\x00"+realHome+"\x00"+sandboxPasswdHome) {
+	if joined := strings.Join(plan.Bwrap, "\x00"); !strings.Contains(joined, "--symlink\x00"+realHome+"\x00"+sandboxPasswdHome) {
 		t.Fatalf("passwd home alias is not mounted: %#v", plan.Bwrap)
 	}
 }

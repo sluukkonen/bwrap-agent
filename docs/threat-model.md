@@ -116,6 +116,8 @@ Runtime cleanup does not recursively delete sandbox-controlled persistent state.
 Bootstrap scratch files are removed after the outer process exits, but may
 remain after an uncatchable launcher termination and are never reused.
 
+The sandbox home has the same pathname as the host home but uses private instance storage. This does not expose the host home directory. Projects and explicit binds beneath home retain their selected access, and automatic configuration mounts remain read-only. The launcher validates private home and XDG mount destinations against symlink redirection and rejects mounts that would replace the private home. The original instance-state paths remain accessible; automatic configuration mounts retain their read-only views through those aliases too.
+
 ## Why the host Podman socket is excluded
 
 The Podman API grants the socket holder full Podman functionality. An agent

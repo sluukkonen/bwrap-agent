@@ -21,8 +21,12 @@ func writeStorageConfig(state string) (string, error) {
 	}
 	runRoot := filepath.Join(sandboxRuntimeDirectory, "containers")
 	graphJSON, _ := json.Marshal(graphRoot)
+	// Rootless storage versions that ignore graphroot previously derived this
+	// path from state/data. Keep that absolute path stable when the sandbox's
+	// XDG_DATA_HOME moves, so existing databases and containers remain usable.
+	rootlessJSON, _ := json.Marshal(filepath.Join(state, "data", "containers", "storage"))
 	runJSON, _ := json.Marshal(runRoot)
-	content := fmt.Sprintf("[storage]\ndriver = \"overlay\"\ngraphroot = %s\nrunroot = %s\n\n[storage.options.overlay]\nignore_chown_errors = \"false\"\n", graphJSON, runJSON)
+	content := fmt.Sprintf("[storage]\ndriver = \"overlay\"\ngraphroot = %s\nrootless_storage_path = %s\nrunroot = %s\n\n[storage.options.overlay]\nignore_chown_errors = \"false\"\n", graphJSON, rootlessJSON, runJSON)
 	return writeStateFile(state, "podman/config/storage.conf", []byte(content), 0o600)
 }
 

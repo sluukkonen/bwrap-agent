@@ -404,6 +404,13 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		}
 	}()
 	project, instance, state := identity.Project, identity.Instance, identity.State
+	layout, err := resolveHomeLayout(identity)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
+	if err := layout.prepare(); err != nil {
+		return LaunchPlan{}, fmt.Errorf("prepare sandbox home: %w", err)
+	}
 	workspaceMode, err := resolveWorkspaceMode(opts.WorkspaceMode)
 	if err != nil {
 		return LaunchPlan{}, err
@@ -473,8 +480,8 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		}
 	}
 	sandboxHostname := "agent-" + truncate(instance, 48)
-	_, passwdHomeAliased := accountHome(state)
-	generatedEtc, err := prepareGeneratedEtc(state, generated, opts.Network, podmanBin != "", sandboxHostname)
+	_, passwdHomeAliased := accountHome(layout.home)
+	generatedEtc, err := prepareGeneratedEtc(layout.home, generated, opts.Network, podmanBin != "", sandboxHostname)
 	if err != nil {
 		return LaunchPlan{}, fmt.Errorf("prepare generated /etc: %w", err)
 	}
@@ -554,7 +561,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 
 	accountName, _ := currentAccount()
 	input := environmentInputs{
-		hostEnv: hostEnv, identity: identity, defaultAccount: accountName, hostAccount: hostAccount,
+		home: layout, hostEnv: hostEnv, identity: identity, defaultAccount: accountName, hostAccount: hostAccount,
 		podman: podmanBin != "", storageConfig: storageConfig, containersConfig: containersConfig,
 		agent: agent.Environment, command: command.Environment,
 	}
@@ -574,7 +581,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		// Bubblewrap creates these paths in the sandbox independently of whether
 		// matching paths exist on the host. They are present by the time the
 		// sandbox runtime applies Landlock.
-		writePaths, err := prepareLandlockWritePaths(hostWritePaths, []string{"/tmp", "/var/tmp", "/run", "/dev"})
+		writePaths, err := prepareLandlockWritePaths(hostWritePaths, []string{layout.canonicalHome, filepath.Join(layout.canonicalHome, ".config"), filepath.Join(layout.canonicalHome, ".local", "share"), "/tmp", "/var/tmp", "/run", "/dev"})
 		if err != nil {
 			return LaunchPlan{}, fmt.Errorf("prepare Landlock write paths: %w", err)
 		}
@@ -585,8 +592,8 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		environment[internalLandlockEnvironment] = string(encoded)
 	}
 
-	layout, err := buildFilesystemLayout(opts, identity, filesystemInputs{
-		bwrap: bwrapBin, podman: podmanBin != "", usePTY: usePTY,
+	filesystem, err := buildFilesystemLayout(opts, identity, filesystemInputs{
+		home: layout, bwrap: bwrapBin, podman: podmanBin != "", usePTY: usePTY,
 		generated: generated, generatedEtc: generatedEtc, passwdHomeAliased: passwdHomeAliased,
 		gitMounts: gitConfig, agentMounts: agent.Mounts, podmanMount: podmanMount,
 		commandMounts: command.Mounts,
@@ -599,7 +606,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	bwrap := layout.args
+	bwrap := filesystem.args
 	if seccompStatus.Effective == "enabled" {
 		bwrap = append(bwrap, "--seccomp", "3")
 	}
@@ -633,7 +640,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	if opts.Network == "private" {
 		proxyPort = proxyGuestPort
 	}
-	launcher := []string{layout.launcherExecutable, internalLaunchMode}
+	launcher := []string{filesystem.launcherExecutable, internalLaunchMode}
 	if launcherTrampoline != "" {
 		// Fedora's SELinux policy leaves a user-home executable launched directly
 		// by pasta in pasta_t, which cannot traverse common state-home labels.
@@ -652,7 +659,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 		Command: command.Argv, outer: outerCommand{podman: podmanBin, pasta: pastaBin},
 		Launcher: launcher,
 		Bwrap:    bwrap, Ports: ports, HostPorts: hostPorts, LaunchEnv: launchEnv,
-		TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: layout.protectedPaths,
+		TTY: usePTY, ConfigFiles: opts.ConfigFiles, ProtectedPaths: filesystem.protectedPaths,
 		Warnings: warnings}, nil
 }
 

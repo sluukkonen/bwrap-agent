@@ -9,6 +9,7 @@ import (
 )
 
 type filesystemInputs struct {
+	home              homeLayout
 	bwrap             string
 	podman            bool
 	usePTY            bool
@@ -98,6 +99,20 @@ func buildFilesystemLayout(opts Options, identity instanceIdentity, input filesy
 		}
 		mounts.mount(option, "/sys", "/sys")
 	}
+	for _, root := range input.home.roots() {
+		mounts.mount("--bind", root.Source, root.Destination)
+	}
+	if input.home.home != input.home.canonicalHome {
+		mounts.parentDirs(input.home.home)
+		mounts.operation("--symlink", input.home.canonicalHome, input.home.home)
+	}
+	for _, path := range []string{state, project, identity.GitCommon} {
+		if path != "" {
+			if err := input.home.validateMount(path, path); err != nil {
+				return filesystemLayout{}, err
+			}
+		}
+	}
 	switch opts.WorkspaceMode {
 	case "write-through":
 		mounts.mount("--bind", project, project)
@@ -124,12 +139,18 @@ func buildFilesystemLayout(opts Options, identity instanceIdentity, input filesy
 	}
 	mounts.mount("--bind", state, state)
 	if input.passwdHomeAliased {
-		mounts.mount("--bind", filepath.Join(state, "home"), sandboxPasswdHome)
+		mounts.operation("--symlink", input.home.home, sandboxPasswdHome)
 	}
 	for _, source := range identity.ROBind {
+		if err := input.home.validateMount(source, source); err != nil {
+			return filesystemLayout{}, err
+		}
 		mounts.mount("--ro-bind", source, source)
 	}
 	for _, source := range identity.RWBind {
+		if err := input.home.validateMount(source, source); err != nil {
+			return filesystemLayout{}, err
+		}
 		mounts.mount("--bind", source, source)
 	}
 	controlMounts, protectedPaths, err := prepareControlFileProtection(opts, identity)
@@ -140,13 +161,19 @@ func buildFilesystemLayout(opts Options, identity instanceIdentity, input filesy
 		mounts.mount(bind.option, bind.source, bind.destination)
 	}
 	for _, bind := range input.gitMounts {
-		mounts.mount("--ro-bind", bind.Source, bind.Destination)
+		if err := input.home.mountResource(&mounts, bind); err != nil {
+			return filesystemLayout{}, err
+		}
 	}
 	for _, bind := range input.agentMounts {
-		mounts.mount("--ro-bind", bind.Source, bind.Destination)
+		if err := input.home.mountResource(&mounts, bind); err != nil {
+			return filesystemLayout{}, err
+		}
 	}
 	if input.podman {
-		mounts.mount("--ro-bind", input.podmanMount.Source, input.podmanMount.Destination)
+		if err := input.home.mountResource(&mounts, input.podmanMount); err != nil {
+			return filesystemLayout{}, err
+		}
 		mounts.mount("--ro-bind", input.podmanMount.Source, filepath.Join(state, "home", ".config", "containers"))
 	}
 	self, err := os.Executable()

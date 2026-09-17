@@ -28,6 +28,23 @@ TMPDIR="$bootstrap_parent" XDG_RUNTIME_DIR=/unavailable "$binary" run \
     --instance integration-bootstrap-off --network host --podman off --tty never /bin/true
 assert_bootstrap_removed
 
+# Databases created with the old HOME/XDG paths must survive the new layout.
+legacy_state="$BWRAP_AGENT_STATE_HOME/instances/integration-legacy-home/state"
+"$binary" run --instance integration-legacy-home --network host --podman on --tty never \
+    --env "HOME=$legacy_state/home" --env "XDG_CONFIG_HOME=$legacy_state/config" \
+    --env "XDG_DATA_HOME=$legacy_state/data" --env "XDG_CACHE_HOME=$legacy_state/home/.cache" \
+    --env "XDG_STATE_HOME=$legacy_state/home/.local/state" /bin/sh -ec '
+        podman volume create legacy-home >/dev/null
+        volume=$(podman volume inspect --format "{{.Mountpoint}}" legacy-home)
+        printf retained >"$volume/marker"
+    '
+"$binary" run --instance integration-legacy-home --network host --podman on --tty never /bin/sh -ec '
+    volume=$(podman volume inspect --format "{{.Mountpoint}}" legacy-home)
+    test "$(cat "$volume/marker")" = retained
+'
+"$binary" instance delete integration-legacy-home --yes
+printf 'podman-legacy-home-ok\n'
+
 for mode in host private none; do
     instance="integration-ephemeral-$mode"
     if [ -n "${BWRAP_AGENT_TEST_IMAGE:-}" ]; then

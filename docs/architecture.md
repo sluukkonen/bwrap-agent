@@ -127,10 +127,17 @@ The root begins as an empty tmpfs. The launcher adds:
 | `/sys` | policy-controlled | Podman uses the outer rootless sysfs view |
 | `/opt`, `/nix/store`, other tool roots | explicit read-only binds | opt-in runtime/tool compatibility |
 | project at its original absolute path | workspace-mode controlled | source and build outputs |
-| managed instance `state/` at its original path | read-write | isolated home, caches, Podman storage |
+| host home path | read-write private backing | instance `state/home`, with `state/config` at `~/.config` and `state/data` at `~/.local/share` |
+| managed instance `state/` at its original path | read-write | persistent backing paths and Podman storage |
 | external Git common directory | policy-controlled | make linked worktrees functional |
 | `/proc`, `/dev` | new virtual filesystems | process and minimal device access; only host `/dev/net/tun` is added for nested pasta; `/dev/fuse` is not exposed |
 | `/tmp`, `/var/tmp`, `/run` | private | scratch data and API sockets |
+
+### Sandbox home
+
+Sandbox `HOME` and the generated account home use the host home path. A symlinked host home is recreated as an alias to the canonical private home; passwd-incompatible names use a safe alias under `/run/bwrap-agent`. The private home and XDG roots are mounted before nested state, workspace, and explicit mounts. Mounts covering the whole home are rejected. Home mountpoints are checked against their private backing entries, without following sandbox-controlled symlinks. Landlock includes the private home and XDG mount roots alongside existing writable paths.
+
+Resource preparation and credential seeding continue to use host backing paths. Launch planning translates automatic mounts and agent paths to their sandbox destinations; automatic read-only mounts also retain their existing state-path views for persisted absolute references. Existing `state/config` and `state/data` remain authoritative, with no data migration or deletion of covered home entries. Podman storage configuration pins the rootless storage path to its original `state/data/containers/storage` location rather than deriving a new database path from the visible XDG directory.
 
 ### System configuration
 

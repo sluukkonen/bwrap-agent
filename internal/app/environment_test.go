@@ -6,7 +6,7 @@ import (
 )
 
 func TestSandboxEnvironmentPrecedence(t *testing.T) {
-	input := environmentInputs{identity: instanceIdentity{State: "/state", Instance: "instance"}, defaultAccount: "fallback", hostEnv: []string{"TERM=host", "LANG=host-lang", "TZ=host-tz", "SECRET=hidden"}, agent: map[string]string{"TERM": "agent", "LANG": "agent-lang"}, command: map[string]string{"TERM": "command", "LANG": "command-lang"}}
+	input := environmentInputs{home: homeLayout{home: "/home/test", canonicalHome: "/home/test", state: "/state"}, identity: instanceIdentity{State: "/state", Instance: "instance"}, defaultAccount: "fallback", hostEnv: []string{"TERM=host", "LANG=host-lang", "TZ=host-tz", "SECRET=hidden"}, agent: map[string]string{"TERM": "agent", "LANG": "agent-lang"}, command: map[string]string{"TERM": "command", "LANG": "command-lang"}}
 	for _, tc := range []struct {
 		name       string
 		env, unset []string
@@ -27,7 +27,7 @@ func TestSandboxEnvironmentPrecedence(t *testing.T) {
 			if value, found := env["TERM"]; value != tc.want || found != tc.present {
 				t.Fatalf("TERM = %q, %v", value, found)
 			}
-			for key, want := range map[string]string{"LANG": "host-lang", "TZ": "host-tz", "HTTP_PROXY": "http://127.0.0.1:65532", "GIT_OPTIONAL_LOCKS": "0", "HOME": "/state/home", "BWRAP_AGENT_INSTANCE": "instance", "USER": "fallback"} {
+			for key, want := range map[string]string{"LANG": "host-lang", "TZ": "host-tz", "HTTP_PROXY": "http://127.0.0.1:65532", "GIT_OPTIONAL_LOCKS": "0", "HOME": "/home/test", "BWRAP_AGENT_INSTANCE": "instance", "USER": "fallback"} {
 				if env[key] != want {
 					t.Errorf("%s = %q, want %q", key, env[key], want)
 				}
@@ -56,7 +56,7 @@ func TestSandboxEnvironmentPrecedence(t *testing.T) {
 
 func TestSandboxEnvironmentAbsentAndEmptyHostValues(t *testing.T) {
 	for _, host := range [][]string{nil, {"USER=", "LOGNAME=", "LANG=", "TZ=", "LC_CTYPE=", "OPENTUI_TEST=", "PATH="}} {
-		input := environmentInputs{defaultAccount: "fallback", hostEnv: host, agent: map[string]string{"LANG": "agent"}}
+		input := environmentInputs{home: homeLayout{home: "/home/test", canonicalHome: "/home/test", state: "/state"}, defaultAccount: "fallback", hostEnv: host, agent: map[string]string{"LANG": "agent"}}
 		env, err := buildSandboxEnvironment(Options{}, input)
 		if err != nil {
 			t.Fatal(err)
@@ -80,12 +80,12 @@ func TestSandboxEnvironmentAbsentAndEmptyHostValues(t *testing.T) {
 
 func TestSandboxEnvironmentValidation(t *testing.T) {
 	for _, assignment := range []string{"missing-equals", "=value", "KEY=bad\x00value"} {
-		if _, err := buildSandboxEnvironment(Options{Env: []string{assignment}}, environmentInputs{}); err == nil {
+		if _, err := buildSandboxEnvironment(Options{Env: []string{assignment}}, environmentInputs{home: homeLayout{home: "/home/test", canonicalHome: "/home/test", state: "/state"}}); err == nil {
 			t.Fatalf("accepted %q", assignment)
 		}
 	}
 	for _, name := range []string{"", "KEY=value", "bad\x00name"} {
-		if _, err := buildSandboxEnvironment(Options{UnsetEnv: []string{name}}, environmentInputs{}); err == nil {
+		if _, err := buildSandboxEnvironment(Options{UnsetEnv: []string{name}}, environmentInputs{home: homeLayout{home: "/home/test", canonicalHome: "/home/test", state: "/state"}}); err == nil {
 			t.Fatalf("accepted unset %q", name)
 		}
 	}
@@ -93,7 +93,7 @@ func TestSandboxEnvironmentValidation(t *testing.T) {
 
 func TestEnvironmentSecurityAndLauncherBoundary(t *testing.T) {
 	for _, podman := range []bool{false, true} {
-		input := environmentInputs{podman: podman, hostAccount: "real-account", hostEnv: []string{"PATH=/host/bin"}, storageConfig: "/state/storage.conf", containersConfig: "/state/containers.conf"}
+		input := environmentInputs{home: homeLayout{home: "/home/test", canonicalHome: "/home/test", state: "/state"}, podman: podman, hostAccount: "real-account", hostEnv: []string{"PATH=/host/bin"}, storageConfig: "/state/storage.conf", containersConfig: "/state/containers.conf"}
 		opts := Options{Env: []string{"USER=sandbox", "LOGNAME=sandbox", "PATH=/sandbox/bin", "BWRAP_AGENT_PODMAN=wrong", "PODMAN_NO_PAUSE_PROCESS=0", "CONTAINERS_CONF=/untrusted", "CONTAINERS_STORAGE_CONF=/untrusted", "CONTAINERS_CONF_OVERRIDE=/untrusted", "CONTAINERS_GRAPHROOT=/untrusted", "CONTAINERS_RUNROOT=/untrusted", internalLandlockEnvironment + "=untrusted"}, UnsetEnv: []string{"BWRAP_AGENT_PODMAN", "CONTAINERS_STORAGE_CONF"}}
 		sandbox, err := buildSandboxEnvironment(opts, input)
 		if err != nil {

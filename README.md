@@ -98,6 +98,9 @@ Put `bwrap-agent` options before the program name. Everything after the program
 name is passed to that program. There is no default agent. Use
 `./bin/bwrap-agent run --help` for all options.
 
+The sandbox uses the host home path with private per-instance contents.
+See [sandbox home](docs/usage.md#sandbox-home) for home and XDG paths.
+
 ## Save your settings
 
 Create a configuration file with explanations and example settings in your

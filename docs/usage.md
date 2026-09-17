@@ -16,6 +16,12 @@ reference.
 - [Environment and terminal](#environment-and-terminal)
 - [Troubleshooting and upgrades](#troubleshooting-and-upgrades)
 
+## Sandbox home
+
+The sandbox uses the same `$HOME` path as the host, with private contents stored per instance. For example, `/home/alice` inside the sandbox is backed by the instance's `state/home` directory. Host home files are visible only through the project, explicit binds, or automatic configuration mounts. A configuration entry such as `ro_bind = ["~/tools"]` therefore appears at sandbox `~/tools` as well.
+
+Sandbox XDG directories use the standard home layout: `~/.config`, `~/.cache`, `~/.local/share`, and `~/.local/state`. Existing `state/config` and `state/data` directories back `~/.config` and `~/.local/share`, so existing settings, credentials, and sessions require no migration. These mounts cover any old entries at `state/home/.config` and `state/home/.local/share` without deleting them. Host XDG settings still select the configuration sources to expose. Explicit environment overrides retain their normal precedence.
+
 ## Configuration
 
 Runtime behavior can be configured in TOML. Starting from built-in defaults,

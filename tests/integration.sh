@@ -116,7 +116,8 @@ test "$(BWRAP_AGENT_STATE_HOME="$managed_home" "$binary" instance list --json)" 
         printf "host-ok\n"
     '
 
-BWRAP_AGENT_STATE_HOME="$test_root/state:home" "$binary" \
+mkdir "$test_root/host:home"
+HOME="$test_root/host:home" BWRAP_AGENT_STATE_HOME="$test_root/state:home" "$binary" \
     run \
     --project "$default_project" \
     --instance integration-passwd-home \
@@ -131,6 +132,71 @@ BWRAP_AGENT_STATE_HOME="$test_root/state:home" "$binary" \
         test "$(cat "$HOME/reachability-probe")" = reachable
         printf "passwd-home-alias-ok\n"
     '
+
+# Host paths and private home storage share one sandbox-visible home layout.
+layout_home="$test_root/layout-home"
+layout_state="$layout_home/.local/state/bwrap-agent"
+layout_config="$test_root/layout-config"
+mkdir -p "$layout_config/bwrap-agent"
+printf 'ro_bind = ["~/tools"]\nrw_bind = ["~/writable"]\n' >"$layout_config/bwrap-agent/config.toml"
+mkdir -p "$layout_home/project" "$layout_home/tools" "$layout_home/writable"
+printf 'host-secret\n' >"$layout_home/host-secret"
+printf '# protected project configuration\n' >"$layout_home/project/.bwrap-agent.toml"
+printf 'tool-content\n' >"$layout_home/tools/value"
+printf '[user]\nname = Home Layout\n' >"$layout_home/.gitconfig"
+for layout_mode in write-through copy-on-write read-only; do
+    HOME="$layout_home" XDG_CONFIG_HOME="$layout_config" BWRAP_AGENT_STATE_HOME="$layout_state" "$binary" \
+        run --no-project-config --project "$layout_home/project" \
+        --instance "layout-$layout_mode" --workspace-mode "$layout_mode" \
+        --podman off --network host --tty never /bin/sh -ec '
+            test "$HOME" = "$1"
+            test "$(getent passwd "$(id -u)" | cut -d: -f6)" = "$HOME"
+            test "$XDG_CONFIG_HOME" = "$HOME/.config"
+            test "$XDG_DATA_HOME" = "$HOME/.local/share"
+            test "$XDG_CACHE_HOME" = "$HOME/.cache"
+            test "$XDG_STATE_HOME" = "$HOME/.local/state"
+            test "$(cat "$HOME/tools/value")" = tool-content
+            test ! -e "$HOME/host-secret"
+            test "$(git config --global user.name)" = "Home Layout"
+            if (printf blocked >"$HOME/tools/value") 2>/dev/null; then exit 1; fi
+            if (printf blocked >"$HOME/.gitconfig") 2>/dev/null; then exit 1; fi
+            printf private >"$HOME/persistent"
+            printf config >"$XDG_CONFIG_HOME/persistent"
+            printf data >"$XDG_DATA_HOME/persistent"
+            printf writable >"$HOME/writable/value"
+            if [ "$2" != copy-on-write ]; then
+                if (printf changed >"$HOME/project/.bwrap-agent.toml") 2>/dev/null; then exit 1; fi
+            fi
+            case "$2" in
+                read-only)
+                    if (printf blocked >"$HOME/project/probe") 2>/dev/null; then exit 1; fi ;;
+                *) printf project >"$HOME/project/probe" ;;
+            esac
+        ' sh "$layout_home" "$layout_mode"
+    test ! -e "$layout_home/persistent"
+    test "$(cat "$layout_home/tools/value")" = tool-content
+    test "$(cat "$layout_home/writable/value")" = writable
+    test "$(cat "$layout_state/instances/layout-$layout_mode/state/home/persistent")" = private
+    test "$(cat "$layout_state/instances/layout-$layout_mode/state/config/persistent")" = config
+    test "$(cat "$layout_state/instances/layout-$layout_mode/state/data/persistent")" = data
+    HOME="$layout_home" BWRAP_AGENT_STATE_HOME="$layout_state" "$binary" \
+        run --no-config --project "$layout_home/project" --instance "layout-$layout_mode" \
+        --podman off --network host --tty never /bin/sh -ec '
+            test "$(cat "$HOME/persistent")" = private
+            test "$(cat "$XDG_CONFIG_HOME/persistent")" = config
+            test "$(cat "$XDG_DATA_HOME/persistent")" = data
+        '
+done
+ln -s "$layout_home" "$test_root/layout-home-alias"
+HOME="$test_root/layout-home-alias" XDG_CONFIG_HOME="$layout_config" BWRAP_AGENT_STATE_HOME="$layout_state" "$binary" \
+    run --no-project-config --project "$layout_home/project" --instance layout-alias \
+    --podman off --network host --tty never /bin/sh -ec '
+        test "$HOME" = "$1"
+        test "$(cat "$HOME/tools/value")" = tool-content
+        test "$(git config --global user.name)" = "Home Layout"
+        if (printf changed >"$HOME/project/.bwrap-agent.toml") 2>/dev/null; then exit 1; fi
+    ' sh "$test_root/layout-home-alias"
+printf 'home-layout-ok\n'
 
 mkdir -p "$HOME/.local/state"
 home_state_root=$(mktemp -d "$HOME/.local/state/bwrap-agent-integration.XXXXXX")

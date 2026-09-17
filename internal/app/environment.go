@@ -9,6 +9,7 @@ import (
 // environmentInputs contains resolved values; environment builders perform no
 // host discovery and do not mutate their inputs.
 type environmentInputs struct {
+	home             homeLayout
 	hostEnv          []string
 	identity         instanceIdentity
 	defaultAccount   string
@@ -24,11 +25,11 @@ func buildSandboxEnvironment(opts Options, input environmentInputs) (map[string]
 	state, instance := input.identity.State, input.identity.Instance
 	workspaceMode := opts.WorkspaceMode
 	environment := map[string]string{
-		"HOME": filepath.Join(state, "home"), "USER": envValue(input.hostEnv, "USER", input.defaultAccount),
+		"HOME": input.home.home, "USER": envValue(input.hostEnv, "USER", input.defaultAccount),
 		"LOGNAME":         envValue(input.hostEnv, "LOGNAME", envValue(input.hostEnv, "USER", input.defaultAccount)),
 		"PATH":            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-		"XDG_CONFIG_HOME": filepath.Join(state, "config"), "XDG_CACHE_HOME": filepath.Join(state, "home", ".cache"),
-		"XDG_DATA_HOME": filepath.Join(state, "data"), "XDG_STATE_HOME": filepath.Join(state, "home", ".local", "state"),
+		"XDG_CONFIG_HOME": filepath.Join(input.home.home, ".config"), "XDG_CACHE_HOME": filepath.Join(input.home.home, ".cache"),
+		"XDG_DATA_HOME": filepath.Join(input.home.home, ".local", "share"), "XDG_STATE_HOME": filepath.Join(input.home.home, ".local", "state"),
 		"XDG_RUNTIME_DIR": sandboxRuntimeDirectory, "TMPDIR": filepath.Join(state, "tmp"),
 		"BWRAP_AGENT_INSTANCE": instance,
 	}
@@ -45,7 +46,7 @@ func buildSandboxEnvironment(opts Options, input environmentInputs) (map[string]
 		environment[name] = value
 	}
 	for name, value := range input.agent {
-		environment[name] = value
+		environment[name] = input.home.destination(value)
 	}
 	for name, value := range input.command {
 		environment[name] = value

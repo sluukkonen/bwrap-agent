@@ -119,9 +119,9 @@ func currentAccount() (name, group string) {
 	return name, group
 }
 
-func generatedAccountFiles(state string, podmanEnabled bool) (passwd, group []byte) {
+func generatedAccountFiles(sandboxHome string, podmanEnabled bool) (passwd, group []byte) {
 	name, groupName := currentAccount()
-	home, _ := accountHome(state)
+	home, _ := accountHome(sandboxHome)
 	uid, gid := os.Getuid(), os.Getgid()
 
 	rootHome := "/root"
@@ -148,8 +148,7 @@ func generatedAccountFiles(state string, podmanEnabled bool) (passwd, group []by
 	return []byte(strings.Join(passwdLines, "\n") + "\n"), []byte(strings.Join(groupLines, "\n") + "\n")
 }
 
-func accountHome(state string) (string, bool) {
-	home := filepath.Join(state, "home")
+func accountHome(home string) (string, bool) {
 	if passwdField(home, "") == "" {
 		return sandboxPasswdHome, true
 	}
@@ -178,8 +177,8 @@ func generatedHosts(hostsPath, network, hostname string) ([]byte, error) {
 	return append(content, []byte(fmt.Sprintf("127.0.0.1 %s\n::1 %s\n", hostname, hostname))...), nil
 }
 
-func prepareGeneratedEtc(state, generated, network string, podmanEnabled bool, hostname string) ([]injectedFile, error) {
-	passwd, group := generatedAccountFiles(state, podmanEnabled)
+func prepareGeneratedEtc(sandboxHome, generated, network string, podmanEnabled bool, hostname string) ([]injectedFile, error) {
+	passwd, group := generatedAccountFiles(sandboxHome, podmanEnabled)
 	hosts, err := generatedHosts("/etc/hosts", network, hostname)
 	if err != nil {
 		return nil, err

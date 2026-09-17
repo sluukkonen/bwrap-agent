@@ -44,7 +44,7 @@ func TestGeneratedAccountUsesSafeReachableHomeAlias(t *testing.T) {
 			t.Errorf("accountHome(%q) = %q, %v", state, home, aliased)
 		}
 	}
-	if home, aliased := accountHome("/tmp/ordinary-state"); home != "/tmp/ordinary-state/home" || aliased {
+	if home, aliased := accountHome("/tmp/ordinary-state"); home != "/tmp/ordinary-state" || aliased {
 		t.Fatalf("ordinary account home = %q, %v", home, aliased)
 	}
 }
@@ -284,7 +284,7 @@ func TestGeneratedEtcIsMinimalAndNetworkSpecific(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(podmanFiles) != 4 || !strings.Contains(string(podmanPasswd), "root:x:0:0:root:"+filepath.Join(podmanState, "home")+":/bin/sh") {
+	if len(podmanFiles) != 4 || !strings.Contains(string(podmanPasswd), "root:x:0:0:root:"+podmanState+":/bin/sh") {
 		t.Fatalf("Podman root home does not use instance state: %q", podmanPasswd)
 	}
 }
