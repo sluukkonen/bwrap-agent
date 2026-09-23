@@ -305,7 +305,7 @@ func TestHelpIsHandledWithoutBuildingPlan(t *testing.T) {
 	normalizedHelp := strings.Join(strings.Fields(help), " ")
 	for _, expected := range []string{
 		"--instance=NAME",
-		"--agent-config=auto|opencode|pi|off",
+		"--agent-config=auto|codex|opencode|pi|off",
 		"--no-config",
 		"--no-project-config",
 		"--network=private|host|none",

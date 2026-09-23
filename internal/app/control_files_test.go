@@ -32,7 +32,7 @@ func TestWorkspaceLeavesMissingControlPathsAbsent(t *testing.T) {
 		if len(plan.ProtectedPaths) != 0 {
 			t.Fatalf("protected absent paths: %v", plan.ProtectedPaths)
 		}
-		for _, path := range []string{projectConfigName, "opencode.json", "opencode.jsonc", ".pi", ".opencode/.gitignore"} {
+		for _, path := range []string{projectConfigName, "AGENTS.md", ".codex", "opencode.json", "opencode.jsonc", ".pi", ".opencode/.gitignore"} {
 			if _, err := os.Lstat(filepath.Join(project, path)); !os.IsNotExist(err) {
 				t.Fatalf("created %s: %v", path, err)
 			}
@@ -53,6 +53,33 @@ func TestWorkspaceLeavesMissingControlPathsAbsent(t *testing.T) {
 		if len(decoded.ProtectedPaths) != 0 {
 			t.Fatal(decoded.ProtectedPaths)
 		}
+	}
+}
+
+func TestCodexControlPathsAreProtected(t *testing.T) {
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	project := t.TempDir()
+	writeTestFile(t, filepath.Join(project, "AGENTS.md"), "instructions")
+	if err := os.Mkdir(filepath.Join(project, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(project, ".codex", "config.toml"), "sandbox_mode = \"read-only\"")
+	opts := controlTestOptions(project, "codex-protected")
+	plan, err := BuildPlan(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{"AGENTS.md", ".codex"} {
+		path := filepath.Join(project, relative)
+		if !strings.Contains(strings.Join(plan.ProtectedPaths, "\x00"), path) {
+			t.Errorf("missing Codex control protection %s: %#v", relative, plan.ProtectedPaths)
+		}
+	}
+	opts.AllowControlFileWrites = true
+	opts.Instance = "codex-writable"
+	plan, err = BuildPlan(opts)
+	if err != nil || len(plan.ProtectedPaths) != 0 {
+		t.Fatalf("explicit control writes = %#v, %v", plan.ProtectedPaths, err)
 	}
 }
 

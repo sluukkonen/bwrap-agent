@@ -143,7 +143,7 @@ func decodeConfig(reader io.Reader, base string) (optionLayer, error) {
 }
 
 func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, error) {
-	if err := validateChoice("agent_config", config.AgentConfig, "auto", "opencode", "pi", "off"); err != nil {
+	if err := validateChoice("agent_config", config.AgentConfig, "auto", "codex", "opencode", "pi", "off"); err != nil {
 		return optionLayer{}, err
 	}
 	if err := validateChoice("clipboard", config.Clipboard, "off", "wayland"); err != nil {

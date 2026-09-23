@@ -394,14 +394,92 @@ HOME="$agent_home" XDG_CONFIG_HOME="$agent_config" XDG_DATA_HOME="$agent_data" "
     --agent-config opencode "$agent_bins/custom-launcher" second changed-host-auth wrapper-auth
 printf 'opencode-agent-ok\n'
 
+codex_home="$test_root/codex-home"
+codex_host="$test_root/codex-host"
+mkdir -p "$codex_home/.agents/skills/example" "$codex_host/skills/example"
+printf 'host-config\n' >"$codex_host/config.toml"
+printf 'host-auth\n' >"$codex_host/auth.json"
+printf 'host-skill\n' >"$codex_host/skills/example/SKILL.md"
+printf 'global-skill\n' >"$codex_home/.agents/skills/example/SKILL.md"
+printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'test "$1" = --dangerously-bypass-approvals-and-sandbox' \
+    'shift' \
+    'test "$CODEX_HOME" = "$HOME/.codex"' \
+    'test "$(cat "$CODEX_HOME/config.toml")" = "$1"' \
+    'test "$(cat "$CODEX_HOME/auth.json")" = "$2"' \
+    'test "$(cat "$CODEX_HOME/skills/example/SKILL.md")" = host-skill' \
+    'test "$(cat "$HOME/.agents/skills/example/SKILL.md")" = global-skill' \
+    'if (printf blocked >"$CODEX_HOME/config.toml") 2>/dev/null; then exit 1; fi' \
+    'printf "%s\n" "$3" >"$CODEX_HOME/auth.json"' \
+    >"$agent_bins/codex"
+chmod +x "$agent_bins/codex"
+HOME="$codex_home" CODEX_HOME="$codex_host" "$binary" \
+    run --project "$config_project" --instance integration-codex --podman off --network host --tty never \
+    "$agent_bins/codex" host-config host-auth sandbox-auth
+printf 'changed-config\n' >"$codex_host/config.toml"
+printf 'changed-host-auth\n' >"$codex_host/auth.json"
+HOME="$codex_home" CODEX_HOME="$codex_host" "$binary" \
+    run --project "$config_project" --instance integration-codex --podman off --network host --tty never \
+    "$agent_bins/codex" changed-config sandbox-auth sandbox-auth
+test "$(cat "$codex_host/auth.json")" = changed-host-auth
+test "$(cat "$BWRAP_AGENT_STATE_HOME/instances/integration-codex/state/home/.codex/auth.json")" = sandbox-auth
+printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'test "$1" = wrapper-argument' \
+    'test "$(cat "$CODEX_HOME/config.toml")" = changed-config' \
+    >"$agent_bins/codex-wrapper"
+chmod +x "$agent_bins/codex-wrapper"
+HOME="$codex_home" CODEX_HOME="$codex_host" "$binary" \
+    run --project "$config_project" --instance integration-codex-wrapper --podman off --network host --tty never \
+    --agent-config codex "$agent_bins/codex-wrapper" wrapper-argument
+npm_root="$test_root/codex-npm"
+npm_bin="$npm_root/bin"
+npm_scope="$npm_root/lib/node_modules/@openai"
+case "$(uname -m)" in
+    x86_64) npm_platform=codex-linux-x64; npm_target=x86_64-unknown-linux-musl ;;
+    aarch64) npm_platform=codex-linux-arm64; npm_target=aarch64-unknown-linux-musl ;;
+    *) echo 'unsupported Codex npm integration architecture' >&2; exit 1 ;;
+esac
+mkdir -p "$npm_bin" "$npm_scope/codex/bin" "$npm_scope/$npm_platform/vendor/$npm_target/bin"
+printf '{"name":"@openai/codex"}\n' >"$npm_scope/codex/package.json"
+printf '%s\n' '#!/bin/sh' 'exec /bin/sh "$@"' >"$npm_bin/node"
+printf '%s\n' \
+    '#!/usr/bin/env node' \
+    'set -eu' \
+    'package_root=$(dirname "$(dirname "$0")")' \
+    'test -f "$package_root/package.json"' \
+    >"$npm_scope/codex/bin/codex.js"
+printf 'exec "$package_root/../%s/vendor/%s/bin/codex" "$@"\n' \
+    "$npm_platform" "$npm_target" >>"$npm_scope/codex/bin/codex.js"
+printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'test "$1" = --dangerously-bypass-approvals-and-sandbox' \
+    'test "$2" = npm-argument' \
+    'test "$(cat "$CODEX_HOME/config.toml")" = changed-config' \
+    >"$npm_scope/$npm_platform/vendor/$npm_target/bin/codex"
+chmod +x "$npm_bin/node" "$npm_scope/codex/bin/codex.js" \
+    "$npm_scope/$npm_platform/vendor/$npm_target/bin/codex"
+ln -s "$npm_scope/codex/bin/codex.js" "$npm_bin/codex"
+HOME="$codex_home" CODEX_HOME="$codex_host" PATH="$npm_bin:$PATH" "$binary" \
+    run --project "$config_project" --instance integration-codex-npm --podman off --network host --tty never \
+    "$npm_bin/codex" npm-argument
+printf 'codex-agent-ok\n'
+
 protected_project="$test_root/protected-project"
 mkdir -p "$protected_project/.opencode/plugins" "$protected_project/.opencode/tools" \
     "$protected_project/.pi/prompts" "$protected_project/.pi/extensions" \
+    "$protected_project/.codex" \
     "$protected_project/.pi/npm" "$protected_project/.pi/git"
 printf '{}\n' >"$protected_project/opencode.json"
 printf '{}\n' >"$protected_project/.opencode/opencode.json"
 printf 'host-ignore\n' >"$protected_project/.opencode/.gitignore"
 printf '{}\n' >"$protected_project/.pi/settings.json"
+printf '# project instructions\n' >"$protected_project/AGENTS.md"
+printf 'sandbox_mode = "read-only"\n' >"$protected_project/.codex/config.toml"
 printf '# trusted host configuration\n' >"$protected_project/.bwrap-agent.toml"
 git init -q "$protected_project"
 printf "# worktree config\n" >"$protected_project/.git/config.worktree"
@@ -410,7 +488,7 @@ printf "# worktree config\n" >"$protected_project/.git/config.worktree"
     run --project "$protected_project" --instance integration-protected --podman off --network host --tty never \
     /bin/sh -ec '
         printf source >ordinary-source
-        for directory in .opencode .pi .git
+        for directory in .opencode .pi .codex .git
         do
             if mv "$directory" "$directory-moved" 2>/dev/null; then
                 echo "unexpectedly renamed protected control directory: $directory" >&2
@@ -418,7 +496,7 @@ printf "# worktree config\n" >"$protected_project/.git/config.worktree"
             fi
         done
         for path in \
-            .bwrap-agent.toml opencode.json .opencode/opencode.json \
+            .bwrap-agent.toml AGENTS.md .codex/config.toml opencode.json .opencode/opencode.json \
             .opencode/plugins/new-plugin .opencode/tools/new-tool \
             .pi/settings.json .pi/extensions/new-extension .pi/npm/new-package .pi/git/new-package \
             .git/config .git/hooks/new-hook .git/config.worktree

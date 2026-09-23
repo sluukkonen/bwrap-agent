@@ -532,6 +532,12 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 	if err != nil {
 		return LaunchPlan{}, err
 	}
+	if adapter != nil && adapter.name == "codex" {
+		command, err = prepareCodexCommand(opts.Command, command, podmanBin != "")
+		if err != nil {
+			return LaunchPlan{}, err
+		}
+	}
 	ports := make([]PortMapping, 0, len(opts.Publish))
 	for _, value := range opts.Publish {
 		port, err := parsePort(value)

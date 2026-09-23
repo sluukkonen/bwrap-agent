@@ -91,6 +91,25 @@ func TestSandboxEnvironmentValidation(t *testing.T) {
 	}
 }
 
+func TestCodexHomeCannotBeRedirected(t *testing.T) {
+	input := environmentInputs{
+		home:  homeLayout{home: "/home/test", canonicalHome: "/home/test", state: "/state"},
+		agent: map[string]string{"CODEX_HOME": "/state/home/.codex"},
+	}
+	for _, opts := range []Options{
+		{Env: []string{"CODEX_HOME=/host/.codex"}},
+		{UnsetEnv: []string{"CODEX_HOME"}},
+	} {
+		if _, err := buildSandboxEnvironment(opts, input); err == nil {
+			t.Fatalf("accepted CODEX_HOME override: %#v", opts)
+		}
+	}
+	env, err := buildSandboxEnvironment(Options{Env: []string{"CODEX_HOME=/home/test/.codex"}}, input)
+	if err != nil || env["CODEX_HOME"] != "/home/test/.codex" {
+		t.Fatalf("private CODEX_HOME = %q, %v", env["CODEX_HOME"], err)
+	}
+}
+
 func TestEnvironmentSecurityAndLauncherBoundary(t *testing.T) {
 	for _, podman := range []bool{false, true} {
 		input := environmentInputs{home: homeLayout{home: "/home/test", canonicalHome: "/home/test", state: "/state"}, podman: podman, hostAccount: "real-account", hostEnv: []string{"PATH=/host/bin"}, storageConfig: "/state/storage.conf", containersConfig: "/state/containers.conf"}

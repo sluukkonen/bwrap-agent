@@ -102,6 +102,8 @@ func prepareControlFileProtection(opts Options, identity instanceIdentity) ([]co
 	var pins []controlMount
 	specs := []controlPathSpec{
 		{root: project, relative: projectConfigName},
+		{root: project, relative: "AGENTS.md"},
+		{root: project, relative: ".codex"},
 		{root: project, relative: "opencode.json"},
 		{root: project, relative: "opencode.jsonc"},
 	}

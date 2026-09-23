@@ -140,6 +140,11 @@ avoids that fragile boundary.
 
 ## Known gaps in the prototype
 
+- With Podman off, direct Codex runs skip Codex's own command sandbox and
+  approvals. Bubblewrap, Landlock when available, seccomp, workspace mode,
+  network policy, and protected control paths remain the active boundary.
+  Wrapper commands must pass the Codex bypass flag themselves if needed.
+
 - Default seccomp profiles conservatively reduce exposed kernel attack surface,
   but they are denylist defense in depth rather than a complete syscall
   allowlist.

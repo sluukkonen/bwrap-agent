@@ -409,6 +409,7 @@ func TestAgentConfigModesAndPrecedence(t *testing.T) {
 		{name: "cli-auto", project: "off", cli: "auto", want: "auto"},
 		{name: "cli-opencode", cli: "opencode", want: "opencode"},
 		{name: "cli-pi", cli: "pi", want: "pi"},
+		{name: "cli-codex", cli: "codex", want: "codex"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			content := func(mode string) string {

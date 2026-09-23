@@ -268,8 +268,8 @@ implementation details.
 ## Agent and Git configuration
 
 The `run` command requires a program; there is no implicit default agent. The
-default `agent_config = "auto"` detects OpenCode and Pi using only the first
-program's executable basename. Their
+default `agent_config = "auto"` detects Codex, OpenCode, and Pi using only the
+first program's executable basename. Their
 user-managed host configuration, extensions, skills, and packages are exposed
 read-only, so host edits are visible on the next launch without letting the
 sandbox rewrite them. Credentials and mutable runtime data remain writable,
@@ -277,20 +277,41 @@ persistent, and isolated per instance. Use `--agent-config off` to suppress new
 host configuration exposure and credential seeding; it never deletes data
 already stored in an instance.
 
-Select `opencode` or `pi` explicitly when using a wrapper:
+Select `codex`, `opencode`, or `pi` explicitly when using a wrapper:
 
 ```console
 $ bwrap-agent run --agent-config opencode tmux opencode
 $ bwrap-agent run --agent-config opencode ./my-custom-opencode-launcher
 ```
 
-You can also set `agent_config = "opencode"` or `agent_config = "pi"` in user
+You can also set `agent_config = "codex"`, `"opencode"`, or `"pi"` in user
 or project configuration. Automatic detection does not inspect arguments or
 script contents. Selection controls configuration sharing and agent environment
 setup; it does not install the agent or change executable preparation. Wrapper
 dependencies must already be available inside the sandbox. `off` retains runtime
 setup for directly detected agents while suppressing new host configuration
 sharing and credential copying.
+
+For Codex, the host `CODEX_HOME` (normally `~/.codex`) supplies read-only
+`config.toml`, profile configs, `AGENTS.md`, `hooks.json`, and existing rules,
+skills, plugins, agents, and prompts. Host `~/.agents/skills` is also read-only.
+Sessions, logs, and caches use private instance state. File-based `auth.json`
+is copied once into that state and can be refreshed by Codex there. Host
+keyring credentials cannot be copied; sign in inside the sandbox or use another
+supported credential source. A host config requiring keyring storage may need
+`-c 'cli_auth_credentials_store="file"'` inside the sandbox. Absolute paths
+referenced by host config still need explicit binds. The sandbox always sets
+`CODEX_HOME` to its private path; do not override it through `[env]`.
+User-local npm installations of `@openai/codex` bring their Node runtime and
+matching native platform package into the sandbox automatically.
+
+With Podman off, a direct `codex` command automatically receives Codex's
+`--dangerously-bypass-approvals-and-sandbox` flag. Codex then relies on
+bwrap-agent's outer sandbox for isolation. Podman-enabled runs
+leave Codex's inner sandbox and approval settings intact. A wrapper such as
+`tmux codex` needs that Codex flag explicitly when Podman is off, because
+bwrap-agent cannot change arguments inside the wrapper. Private networking
+also requires allowing the origins used by your Codex login and provider.
 
 For OpenCode, `$XDG_CONFIG_HOME/opencode` is mounted read-only while
 `$XDG_DATA_HOME/opencode`, including a seed-once copy of `auth.json`, remains

@@ -309,7 +309,7 @@ launcher cannot fully replace.
 Agent support is command-oriented rather than hard-coded: `run` requires a
 program and passes the remainder through unchanged. An internal registry keyed
 by executable basename supports automatic selection. The `agent_config` mode
-defaults to `auto`; `opencode` and `pi` explicitly select configuration for any
+defaults to `auto`; `codex`, `opencode`, and `pi` explicitly select configuration for any
 command, including wrappers. `off` suppresses host configuration sharing and
 credential seeding while retaining runtime setup for detected commands. A
 selected adapter contributes read-only configuration mounts
@@ -327,6 +327,16 @@ other executables, an adapter may supply a resolver for a packaged command; the
 generic standalone path runs a snapshot at `/run/bwrap-agent/command` and
 preserves the remaining arguments. Plan construction combines these command
 resources with the agent configuration.
+
+The Codex adapter presents selected user-managed files and resource directories
+from host `CODEX_HOME` read-only under an instance-local `$HOME/.codex`. It seeds
+file-based `auth.json` once; sessions, logs, caches, and databases remain private.
+Host `~/.agents/skills` is mounted read-only. The sandbox pins `CODEX_HOME` to
+the private directory. Direct Codex commands receive the CLI's externally
+sandboxed bypass flag when Podman is effectively off, because the development
+seccomp profile and disabled user namespaces prevent Codex's inner Linux
+sandbox. Podman-enabled launches retain the inner sandbox. Project-root
+`AGENTS.md` and `.codex/` are protected control paths in write-through mode.
 
 Host resource discovery shares one source policy across agent adapters, Git
 configuration, Podman configuration, and the clipboard bridge. The policy
@@ -347,10 +357,11 @@ authentication, trust, and model-catalog state once, and keeps sessions
 instance-local. Pi's `~/.agents/skills` discovery is provided as a read-only
 mount.
 
-For npm-installed Pi, the package root and host Node executable are mounted at
-neutral paths so installations from user-level runtime managers retain their
-JavaScript entrypoint and runtime. Standalone and ordinary system executables
-retain the generic command path.
+For npm-installed Pi and Codex, their package root and host Node executable are
+mounted at neutral paths so installations from user-level runtime managers
+retain their JavaScript entrypoint and runtime. Codex also mounts the matching
+platform package when installed as an optional dependency. Standalone and
+ordinary system executables retain the generic command path.
 
 ## Podman state and socket
 

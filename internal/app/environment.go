@@ -61,11 +61,17 @@ func buildSandboxEnvironment(opts Options, input environmentInputs) (map[string]
 		if !found || name == "" || strings.ContainsRune(value, 0) {
 			return nil, fmt.Errorf("invalid --env assignment: %q", assignment)
 		}
+		if name == "CODEX_HOME" && input.agent[name] != "" && value != input.home.destination(input.agent[name]) {
+			return nil, fmt.Errorf("CODEX_HOME must use the private instance path %s", input.home.destination(input.agent[name]))
+		}
 		environment[name] = value
 	}
 	for _, name := range opts.UnsetEnv {
 		if name == "" || strings.Contains(name, "=") || strings.ContainsRune(name, 0) {
 			return nil, fmt.Errorf("invalid --unsetenv name: %q", name)
+		}
+		if name == "CODEX_HOME" && input.agent[name] != "" {
+			return nil, fmt.Errorf("CODEX_HOME is required for the private Codex instance")
 		}
 		delete(environment, name)
 	}

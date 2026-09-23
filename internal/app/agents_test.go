@@ -27,6 +27,11 @@ func mountMap(mounts []resourceMount) map[string]string {
 }
 
 func TestAgentDetection(t *testing.T) {
+	for _, program := range []string{"codex", "/opt/bin/codex.exe"} {
+		if adapter := detectAgent(program); adapter == nil || adapter.name != "codex" {
+			t.Fatalf("detectAgent(%q) = %#v", program, adapter)
+		}
+	}
 	for _, program := range []string{"opencode", "/opt/bin/opencode.exe"} {
 		if adapter := detectAgent(program); adapter == nil || adapter.name != "opencode" {
 			t.Fatalf("detectAgent(%q) = %#v", program, adapter)
@@ -350,6 +355,9 @@ func TestSelectAgentConfig(t *testing.T) {
 		{"auto", []string{"./my-custom-opencode-launcher"}, ""},
 		{"opencode", []string{"tmux", "opencode"}, "opencode"},
 		{"pi", []string{"./custom-launcher"}, "pi"},
+		{"codex", []string{"./custom-launcher"}, "codex"},
+		{"auto", []string{"/opt/bin/codex"}, "codex"},
+		{"off", []string{"codex"}, "codex"},
 		{"opencode", []string{"pi"}, "opencode"},
 		{"off", []string{"pi"}, "pi"},
 		{"off", []string{"tmux", "pi"}, ""},

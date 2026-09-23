@@ -27,6 +27,12 @@ type agentAdapter struct {
 
 var agentAdapters = []*agentAdapter{
 	{
+		name:                   "codex",
+		programNames:           map[string]bool{"codex": true, "codex.exe": true},
+		prepare:                prepareCodex,
+		resolveExternalCommand: resolveCodexExternalCommand,
+	},
+	{
 		name:         "opencode",
 		programNames: map[string]bool{"opencode": true, "opencode.exe": true},
 		prepare:      prepareOpenCode,
@@ -58,10 +64,10 @@ func selectAgentConfig(mode string, command []string) (*agentAdapter, error) {
 			return nil, nil
 		}
 		return detectAgent(command[0]), nil
-	case "opencode", "pi":
+	case "codex", "opencode", "pi":
 		return detectAgent(mode), nil
 	default:
-		return nil, fmt.Errorf("invalid agent configuration mode %q: expected auto, opencode, pi, or off", mode)
+		return nil, fmt.Errorf("invalid agent configuration mode %q: expected auto, codex, opencode, pi, or off", mode)
 	}
 }
 

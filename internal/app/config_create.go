@@ -62,7 +62,8 @@ const commonConfigTemplate = `# Workspace
 # ---------------------------
 # Share host agent configuration read-only and copy credentials into the
 # instance once. The sandbox can read these credentials. Default: "auto".
-#   "auto"     - detect OpenCode or Pi from the first program's basename
+#   "auto"     - detect Codex, OpenCode, or Pi from the first program's basename
+#   "codex"   - use Codex configuration, including with wrappers
 #   "opencode" - use OpenCode configuration, including with wrappers
 #   "pi"       - use Pi configuration, including with wrappers
 #   "off"      - stop new sharing and copying; keep existing instance data
