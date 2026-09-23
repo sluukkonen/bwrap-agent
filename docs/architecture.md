@@ -308,14 +308,19 @@ launcher cannot fully replace.
 
 Agent support is command-oriented rather than hard-coded: `run` requires a
 program and passes the remainder through unchanged. An internal registry keyed
-by executable basename lets an adapter contribute read-only configuration mounts
-and sandbox environment values, and seed mutable files once. Auto-discovered
+by executable basename supports automatic selection. The `agent_config` mode
+defaults to `auto`; `opencode` and `pi` explicitly select configuration for any
+command, including wrappers. `off` suppresses host configuration sharing and
+credential seeding while retaining runtime setup for detected commands. A
+selected adapter contributes read-only configuration mounts
+and sandbox environment values, and seeds mutable files once. Discovered
 sources are canonicalized and rejected when their lexical or resolved paths
 overlap the project, instance state, external Git metadata, or explicit writable
 binds, preventing a prior sandbox run from retargeting a source toward hidden
 host data.
 
-Command preparation is separate from agent configuration. It returns the
+Command preparation uses the actual first executable's detected adapter,
+independently of explicit configuration selection. It returns the
 executable arguments together with their required mounts and environment values
 in a `preparedCommand`. System executables retain the requested arguments. For
 other executables, an adapter may supply a resolver for a packaged command; the

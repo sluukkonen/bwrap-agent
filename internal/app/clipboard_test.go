@@ -337,7 +337,7 @@ func TestClipboardPlanDoesNotExposeDesktop(t *testing.T) {
 		t.Setenv(key, value)
 	}
 	opts := controlTestOptions(filepath.Join(filepath.Dir(host.state), "project"), "clipboard-plan")
-	opts.NoAgentConfig = true
+	opts.AgentConfig = "off"
 	opts.TTY = "always"
 	before, err := BuildPlan(opts)
 	if err != nil {

@@ -16,7 +16,7 @@ type fileConfig struct {
 	Clipboard     *string        `toml:"clipboard"`
 	Instance      *string        `toml:"instance"`
 	GitConfig     *bool          `toml:"git_config"`
-	AgentConfig   *bool          `toml:"agent_config"`
+	AgentConfig   *string        `toml:"agent_config"`
 	Network       *string        `toml:"network"`
 	NetworkAllow  []string       `toml:"network_allow"`
 	Publish       []string       `toml:"publish"`
@@ -49,7 +49,7 @@ type optionLayer struct {
 	clipboard     *string
 	instance      *string
 	gitConfig     *bool
-	agentConfig   *bool
+	agentConfig   *string
 	network       *string
 	networkAllow  []string
 	publish       []string
@@ -143,6 +143,9 @@ func decodeConfig(reader io.Reader, base string) (optionLayer, error) {
 }
 
 func makeConfigLayer(config fileConfig, baseDirectory string) (optionLayer, error) {
+	if err := validateChoice("agent_config", config.AgentConfig, "auto", "opencode", "pi", "off"); err != nil {
+		return optionLayer{}, err
+	}
 	if err := validateChoice("clipboard", config.Clipboard, "off", "wayland"); err != nil {
 		return optionLayer{}, err
 	}
@@ -341,6 +344,7 @@ func resolveEnvironment(directives map[string]envDirective, hostEnvironment []st
 func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources []ConfigSource, hostEnvironment []string) (Options, error) {
 	opts := Options{
 		Clipboard:              "off",
+		AgentConfig:            "auto",
 		Project:                project,
 		Network:                "private",
 		Podman:                 "auto",
@@ -353,7 +357,6 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		Command:                append([]string(nil), cli.Command...),
 		ConfigFiles:            append([]ConfigSource(nil), sources...),
 	}
-	agentConfig := true
 	gitConfig := true
 	environment := map[string]envDirective{}
 	apply := func(layer optionLayer) {
@@ -367,7 +370,7 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 			gitConfig = *layer.gitConfig
 		}
 		if layer.agentConfig != nil {
-			agentConfig = *layer.agentConfig
+			opts.AgentConfig = *layer.agentConfig
 		}
 		if layer.network != nil {
 			opts.Network = *layer.network
@@ -425,7 +428,6 @@ func mergeOptions(cli cliOptions, project string, layers []optionLayer, sources 
 		environment:   cliEnvironment,
 		tty:           cli.TTY,
 	})
-	opts.NoAgentConfig = !agentConfig
 	opts.NoGitConfig = !gitConfig
 	opts.Env, opts.UnsetEnv = resolveEnvironment(environment, hostEnvironment)
 	if opts.Network == "host" && len(opts.NetworkAllow) > 0 {

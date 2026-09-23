@@ -162,7 +162,7 @@ func TestGitConfigOptions(t *testing.T) {
 	}{
 		{name: "default"},
 		{name: "cli-disable", args: []string{"--no-git-config"}, disabled: true},
-		{name: "independent", args: []string{"--no-agent-config"}},
+		{name: "independent", args: []string{"--agent-config", "off"}},
 		{name: "user-disable", user: "git_config = false", disabled: true},
 		{name: "project-enable", user: "git_config = false", project: "git_config = true"},
 		{name: "project-disable", user: "git_config = true", project: "git_config = false", disabled: true},
@@ -197,7 +197,7 @@ func TestGitConfigPlan(t *testing.T) {
 			}
 			t.Run(mode+"-"+podman, func(t *testing.T) {
 				t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
-				opts := Options{Project: t.TempDir(), Network: "host", Podman: podman, WorkspaceMode: mode, TTY: "never", NoAgentConfig: true, Command: []string{"/bin/true"}}
+				opts := Options{Project: t.TempDir(), Network: "host", Podman: podman, WorkspaceMode: mode, TTY: "never", AgentConfig: "off", Command: []string{"/bin/true"}}
 				plan, err := BuildPlan(opts)
 				if err != nil {
 					t.Fatal(err)

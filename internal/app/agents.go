@@ -49,6 +49,22 @@ func detectAgent(program string) *agentAdapter {
 	return nil
 }
 
+// selectAgentConfig selects configuration independently of executable preparation.
+// Off retains runtime setup for detected commands, without sharing host config.
+func selectAgentConfig(mode string, command []string) (*agentAdapter, error) {
+	switch mode {
+	case "", "auto", "off":
+		if len(command) == 0 {
+			return nil, nil
+		}
+		return detectAgent(command[0]), nil
+	case "opencode", "pi":
+		return detectAgent(mode), nil
+	default:
+		return nil, fmt.Errorf("invalid agent configuration mode %q: expected auto, opencode, pi, or off", mode)
+	}
+}
+
 func prepareAgent(adapter *agentAdapter, context hostContext, config bool) (agentSetup, error) {
 	if adapter == nil || adapter.prepare == nil {
 		return agentSetup{}, nil

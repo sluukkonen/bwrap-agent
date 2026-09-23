@@ -40,7 +40,7 @@ MISSING_FALLBACK = "lower"
 `)
 	writeTestFile(t, filepath.Join(project, ".bwrap-agent.toml"), `
 instance = "project-instance"
-agent_config = false
+agent_config = "off"
 network = "private"
 tty = "never"
 workspace_mode = "read-only"
@@ -76,7 +76,7 @@ PRESENT = { inherit = true }
 		"--workspace-mode", "write-through",
 		"--landlock", "required",
 		"--seccomp", "required",
-		"--agent-config",
+		"--agent-config", "auto",
 		"--publish", "11003:3",
 		"--host-port", "12003:3", "--host-port", "12004:4/udp",
 		"--ro-bind", "cli-relative",
@@ -88,7 +88,7 @@ PRESENT = { inherit = true }
 	if err != nil || code != 0 {
 		t.Fatalf("parseOptions failed: code=%d err=%v stderr=%q", code, err, stderr.String())
 	}
-	if opts.Instance != "cli-instance" || opts.Network != "none" || opts.Podman != "off" || opts.WorkspaceMode != "write-through" || opts.Landlock != "required" || opts.Seccomp != "required" || opts.TTY != "never" || opts.NoAgentConfig {
+	if opts.Instance != "cli-instance" || opts.Network != "none" || opts.Podman != "off" || opts.WorkspaceMode != "write-through" || opts.Landlock != "required" || opts.Seccomp != "required" || opts.TTY != "never" || opts.AgentConfig != "auto" {
 		t.Fatalf("unexpected merged scalars: %#v", opts)
 	}
 	if want := []string{"11001:1", "11002:2", "11003:3"}; !reflect.DeepEqual(opts.Publish, want) {
@@ -340,15 +340,15 @@ func TestHelpDoesNotLoadConfiguration(t *testing.T) {
 func TestAgentConfigFlagsAndEmptyEnvironment(t *testing.T) {
 	for _, test := range []struct {
 		args            []string
-		noAgentConfig   bool
+		agentConfig     string
 		environmentWant []string
 	}{
-		{[]string{"--no-agent-config", "--env", "EMPTY=", "/bin/true"}, true, []string{"EMPTY="}},
-		{[]string{"--agent-config", "/bin/true"}, false, nil},
+		{[]string{"--agent-config", "off", "--env", "EMPTY=", "/bin/true"}, "off", []string{"EMPTY="}},
+		{[]string{"--agent-config", "auto", "/bin/true"}, "auto", nil},
 	} {
 		args := append([]string{"run", "--no-config"}, test.args...)
 		opts, code, err := parseOptions(args, &bytes.Buffer{}, &bytes.Buffer{})
-		if err != nil || code != 0 || opts.NoAgentConfig != test.noAgentConfig || !reflect.DeepEqual(opts.Env, test.environmentWant) {
+		if err != nil || code != 0 || opts.AgentConfig != test.agentConfig || !reflect.DeepEqual(opts.Env, test.environmentWant) {
 			t.Fatalf("parseOptions(%q) = %#v code=%d err=%v", args, opts, code, err)
 		}
 	}
@@ -392,5 +392,64 @@ func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAgentConfigModesAndPrecedence(t *testing.T) {
+	project, config := t.TempDir(), t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
+	t.Setenv("BWRAP_AGENT_STATE_HOME", t.TempDir())
+	for _, scenario := range []struct {
+		name, user, project, cli, want string
+	}{
+		{name: "default", want: "auto"},
+		{name: "user", user: "opencode", want: "opencode"},
+		{name: "project", user: "opencode", project: "pi", want: "pi"},
+		{name: "cli", user: "opencode", project: "pi", cli: "off", want: "off"},
+		{name: "cli-auto", project: "off", cli: "auto", want: "auto"},
+		{name: "cli-opencode", cli: "opencode", want: "opencode"},
+		{name: "cli-pi", cli: "pi", want: "pi"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			content := func(mode string) string {
+				if mode == "" {
+					return ""
+				}
+				return `agent_config = "` + mode + `"`
+			}
+			writeAgentTestFile(t, filepath.Join(config, "bwrap-agent", "config.toml"), content(scenario.user))
+			writeAgentTestFile(t, filepath.Join(project, projectConfigName), content(scenario.project))
+			trustTestConfig(t, project)
+			args := []string{"run", "--project", project}
+			if scenario.cli != "" {
+				args = append(args, "--agent-config", scenario.cli)
+			}
+			args = append(args, "tmux", "opencode", "--agent-config", "off")
+			opts, code, err := parseOptions(args, &bytes.Buffer{}, &bytes.Buffer{})
+			if err != nil || code != 0 || opts.AgentConfig != scenario.want {
+				t.Fatalf("options=%#v code=%d err=%v", opts, code, err)
+			}
+			if !reflect.DeepEqual(opts.Command, []string{"tmux", "opencode", "--agent-config", "off"}) {
+				t.Fatalf("command arguments changed: %q", opts.Command)
+			}
+		})
+	}
+}
+
+func TestAgentConfigRejectsInvalidAndLegacyValues(t *testing.T) {
+	for _, value := range []string{`true`, `false`, `""`, `"unknown"`, `"AUTO"`, `1`} {
+		if _, err := decodeConfig(strings.NewReader("agent_config = "+value), t.TempDir()); err == nil {
+			t.Errorf("accepted agent_config = %s", value)
+		}
+	}
+	for _, flags := range [][]string{
+		{"--no-agent-config"}, {"--agent-config"}, {"--agent-config=true"},
+		{"--agent-config=false"}, {"--agent-config="}, {"--agent-config", "unknown"},
+	} {
+		args := append([]string{"run", "--no-config"}, flags...)
+		args = append(args, "/bin/true")
+		if _, _, err := parseOptions(args, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+			t.Errorf("accepted legacy or invalid flags: %q", flags)
+		}
 	}
 }

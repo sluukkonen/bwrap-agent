@@ -393,6 +393,10 @@ func BuildPlan(opts Options) (LaunchPlan, error) {
 }
 
 func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resultErr error) {
+	configAdapter, err := selectAgentConfig(opts.AgentConfig, opts.Command)
+	if err != nil {
+		return LaunchPlan{}, err
+	}
 	hostEnv := os.Environ()
 	generated, err := preparePrivateFiles(identity)
 	if err != nil {
@@ -516,7 +520,7 @@ func buildPlan(opts Options, identity instanceIdentity) (result LaunchPlan, resu
 			return LaunchPlan{}, err
 		}
 	}
-	agent, err := prepareAgent(adapter, host, !opts.NoAgentConfig)
+	agent, err := prepareAgent(configAdapter, host, opts.AgentConfig != "off")
 	if err != nil {
 		return LaunchPlan{}, err
 	}

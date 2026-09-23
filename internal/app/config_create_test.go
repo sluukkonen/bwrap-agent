@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -38,14 +39,14 @@ func assertConfigTemplate(t *testing.T, path string, project bool) {
 		}
 		setting := "# " + key + " ="
 		if key == "env" {
-			setting = "# [env]"
+			setting = "\n[env]\n"
 		}
 		if !bytes.Contains(content, []byte(setting)) {
 			t.Errorf("generated configuration does not document %q", setting)
 		}
 	}
 	for lineNumber, line := range strings.Split(strings.TrimSuffix(string(content), "\n"), "\n") {
-		if line != "" && !strings.HasPrefix(line, "#") {
+		if line != "" && line != "[env]" && !strings.HasPrefix(line, "#") {
 			t.Errorf("line %d is active TOML: %q", lineNumber+1, line)
 		}
 	}
@@ -53,10 +54,85 @@ func assertConfigTemplate(t *testing.T, path string, project bool) {
 	if err != nil || !found {
 		t.Fatalf("generated configuration did not load: found=%v err=%v", found, err)
 	}
-	if layer.instance != nil || layer.agentConfig != nil || layer.gitConfig != nil || layer.network != nil || len(layer.networkAllow) != 0 || len(layer.publish) != 0 ||
-		layer.podman != nil || layer.workspaceMode != nil || layer.landlock != nil || layer.seccomp != nil || len(layer.roBind) != 0 ||
-		len(layer.rwBind) != 0 || len(layer.environment) != 0 || layer.tty != nil || layer.clipboard != nil {
-		t.Fatalf("generated configuration is not neutral: %#v", layer)
+	value := reflect.ValueOf(layer)
+	for index := 0; index < value.NumField(); index++ {
+		field := value.Field(index)
+		empty := field.IsZero()
+		if field.Kind() == reflect.Slice || field.Kind() == reflect.Map {
+			empty = field.Len() == 0
+		}
+		if !empty {
+			t.Errorf("generated configuration sets %s: %#v", value.Type().Field(index).Name, layer)
+		}
+	}
+}
+
+func TestConfigTemplateExamples(t *testing.T) {
+	assignment := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]* = `)
+	for scope, template := range map[string]string{"project": projectConfigTemplate, "user": userConfigTemplate} {
+		t.Run(scope, func(t *testing.T) {
+			var example strings.Builder
+			inArray := false
+			for _, line := range strings.Split(template, "\n") {
+				line, commented := strings.CutPrefix(line, "# ")
+				if !commented && line != "[env]" {
+					continue
+				}
+				if inArray || assignment.MatchString(line) || line == "[env]" {
+					example.WriteString(line + "\n")
+					if strings.HasSuffix(line, "= [") {
+						inArray = true
+					} else if strings.TrimSpace(line) == "]" {
+						inArray = false
+					}
+				}
+			}
+			base := t.TempDir()
+			layer, err := decodeConfig(strings.NewReader(example.String()), base)
+			if err != nil {
+				t.Fatalf("uncommented examples failed to load: %v\n%s", err, example.String())
+			}
+			// Every setting must survive uncommenting, including top-level keys
+			// that would be misplaced if moved below the environment table.
+			value := reflect.ValueOf(layer)
+			for index := 0; index < value.NumField(); index++ {
+				name := value.Type().Field(index).Name
+				if scope == "user" && name == "instance" {
+					if !value.Field(index).IsZero() {
+						t.Error("user examples include an instance name")
+					}
+					continue
+				}
+				field := value.Field(index)
+				empty := field.IsZero()
+				if field.Kind() == reflect.Slice || field.Kind() == reflect.Map {
+					empty = field.Len() == 0
+				}
+				if empty {
+					t.Errorf("uncommented examples omit %s", name)
+				}
+			}
+			for name, pair := range map[string][2][]string{
+				"network_allow": {layer.networkAllow, {"https://api.example.com", "https://*.packages.example.com"}},
+				"publish":       {layer.publish, {"13000:3000"}},
+				"host_port":     {layer.hostPort, {"9222", "15432:5432"}},
+				"ro_bind":       {layer.roBind, {filepath.Join(base, "toolchain")}},
+				"rw_bind":       {layer.rwBind, {"/var/lib/example"}},
+			} {
+				if !reflect.DeepEqual(pair[0], pair[1]) {
+					t.Errorf("%s = %q, want %q", name, pair[0], pair[1])
+				}
+			}
+			wantEnvironment := map[string]envDirective{
+				"LITERAL":       {kind: envLiteral, value: "value"},
+				"EMPTY":         {kind: envLiteral, value: ""},
+				"FROM_HOST":     {kind: envInherit},
+				"SSH_AUTH_SOCK": {kind: envUnset},
+			}
+			if !reflect.DeepEqual(layer.environment, wantEnvironment) {
+				t.Errorf("environment = %#v, want %#v", layer.environment, wantEnvironment)
+			}
+		})
 	}
 }
 

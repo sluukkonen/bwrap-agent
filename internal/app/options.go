@@ -26,7 +26,7 @@ type Options struct {
 	Clipboard              string
 	Project                string
 	Instance               string
-	NoAgentConfig          bool
+	AgentConfig            string
 	NoGitConfig            bool
 	Network                string
 	NetworkAllow           []string
@@ -54,7 +54,7 @@ type cliOptions struct {
 	Project                *string    `name:"project" type:"path" placeholder:"PATH" help:"Expose PATH as the project directory; write behavior follows --workspace-mode (default: current directory)."`
 	Instance               *string    `name:"instance" placeholder:"NAME" help:"Use this managed instance name, overriding project configuration (default: project directory name)."`
 	GitConfig              *bool      `name:"git-config" negatable:"" help:"Expose standard host user Git configuration read-only. Default: enabled."`
-	AgentConfig            *bool      `name:"agent-config" negatable:"" help:"Expose detected host agent configuration read-only and seed mutable credentials. Default: enabled."`
+	AgentConfig            *string    `name:"agent-config" enum:"auto,opencode,pi,off" placeholder:"auto|opencode|pi|off" help:"Host agent configuration: auto detects the first program name; opencode or pi selects explicitly; off disables sharing and credential seeding. Default: auto."`
 	NoConfig               bool       `name:"no-config" help:"Do not load user or project configuration files."`
 	NoProjectConfig        bool       `name:"no-project-config" help:"Load user configuration but not the project configuration file."`
 	Network                *string    `name:"network" enum:"private,host,none" placeholder:"private|host|none" help:"Network mode: private (HTTP/HTTPS allowlist enforced), host (shared and unrestricted), or none (disabled). Default: private."`

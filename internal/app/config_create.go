@@ -13,23 +13,24 @@ const projectConfigName = ".bwrap-agent.toml"
 
 const projectConfigTemplate = `# bwrap-agent project configuration
 #
-# Uncomment only the settings you need. This fully commented file changes no
-# defaults. Example hostnames and paths must be replaced with your own values.
+# Uncomment only the settings you need. Commented settings change nothing.
+# Replace example hostnames and paths with your own values.
 #
-# This file can grant access to host files, services, and credentials. Review
-# it on the host, then run: bwrap-agent config trust
-# Every edit, including comments, requires approval again before the next run.
+# This file can grant access to host files, services, and credentials. After
+# reviewing it on the host, run: bwrap-agent config trust
+# Every edit, including comments, requires trusting the file again.
 #
-# Precedence: built-in defaults < user file < project file < command line.
-# Scalar values override earlier values; network and bind lists accumulate.
-# Project selection and the program to run are command-line options only.
+# Settings apply in this order: built-in defaults, user file, project file, CLI.
+# Later scalar values win; network and bind lists add to earlier lists.
+# The project and the program to run are command-line options only.
 
 # Instance
 # --------
-# A persistent home, credentials, caches, and container storage for this project.
-# Default: a name derived from the project directory. Set a name here or override
-# it with --instance. A name belongs to one project; only one run can use it at
-# a time. This setting is not allowed in the user configuration.
+# Choose the persistent home, credentials, caches, and container storage to use.
+# Default: a name derived from the project directory.
+# A name belongs to one project and can be used by only one run at a time.
+# Project configuration only; --instance overrides this setting.
+# Example:
 # instance = "my-project"
 
 ` + commonConfigTemplate
@@ -37,126 +38,171 @@ const projectConfigTemplate = `# bwrap-agent project configuration
 const userConfigTemplate = `# bwrap-agent user configuration
 #
 # These settings apply across your projects and need no separate approval.
-# Uncomment only the settings you need. This fully commented file changes no
-# defaults. Example hostnames and paths must be replaced with your own values.
+# Uncomment only the settings you need. Commented settings change nothing.
+# Replace example hostnames and paths with your own values.
 #
-# Precedence: built-in defaults < user file < project file < command line.
-# Scalar values override earlier values; network and bind lists accumulate.
-# Use project configuration or --instance for an instance name, not this file.
-# Project selection and the program to run are command-line options only.
+# Settings apply in this order: built-in defaults, user file, project file, CLI.
+# Later scalar values win; network and bind lists add to earlier lists.
+# Set an instance name in project configuration or with --instance.
+# The project and the program to run are command-line options only.
 
 ` + commonConfigTemplate
 
 const commonConfigTemplate = `# Workspace
 # ---------
-# What happens to project edits: "write-through" saves them to the host,
-# "copy-on-write" discards them at exit, and "read-only" rejects writes.
-# Instance state persists in every mode. Explicit rw_bind paths still write to
-# the host. Default: "write-through".
+# Control what happens to project edits. Default: "write-through".
+#   "write-through" - save edits to the host
+#   "copy-on-write" - discard edits when the sandbox exits
+#   "read-only"     - reject writes
+# Instance state persists in every mode. Explicit rw_bind paths still write
+# to the host in every mode.
 # workspace_mode = "write-through"
 
 # Agent and Git configuration
 # ---------------------------
-# Expose detected OpenCode or Pi host configuration read-only and seed their
-# credentials into the instance once. The sandbox can read those credentials.
-# Setting false prevents new exposure/seeding; it does not clear existing state.
-# Default: true.
-# agent_config = true
+# Share host agent configuration read-only and copy credentials into the
+# instance once. The sandbox can read these credentials. Default: "auto".
+#   "auto"     - detect OpenCode or Pi from the first program's basename
+#   "opencode" - use OpenCode configuration, including with wrappers
+#   "pi"       - use Pi configuration, including with wrappers
+#   "off"      - stop new sharing and copying; keep existing instance data
+# Auto does not inspect arguments or launcher scripts. For tmux or a custom
+# launcher, select the agent explicitly. This does not install the agent or
+# change the command being run.
+# agent_config = "auto"
 
-# Expose ~/.gitconfig and the XDG Git config file read-only, including any
-# credentials they contain. Included files and other referenced resources need
-# explicit binds. Setting false does not clear instance data. Default: true.
+# Share ~/.gitconfig and the XDG Git config file read-only. Default: true.
+# The sandbox can read any credentials in these files. Included files and
+# other referenced resources need explicit binds. Setting false leaves
+# existing instance data in place.
 # git_config = true
 
 # Networking
 # ----------
-# "private": separate local ports, with outside HTTP/HTTPS access controlled by
-# network_allow. "host": shared, unrestricted host networking. "none": offline.
+# Choose how the sandbox connects to the network. Default: "private".
+#   "private" - separate local ports; outside HTTP/HTTPS uses network_allow
+#   "host"    - share the host network with unrestricted access
+#   "none"    - offline
 # A non-empty network_allow is rejected with "host" and ignored with "none".
-# Default: "private".
 # network = "private"
 
-# Allowed HTTP/HTTPS origins in private mode. Default: [] (no outside access
-# through the proxy). Add your agent's provider and any required registries.
-# Programs must use the HTTP proxy variables; direct external sockets have no
-# route. A missing port means 80 for HTTP or 443 for HTTPS.
-# A leading *. matches subdomains, not the parent; a full * allows every host.
+# Allow HTTP/HTTPS origins in private mode. Default: [] (no outside proxy access).
+# Add your agent's provider and any required package or container registries.
+# Programs must use the HTTP proxy environment variables; direct external
+# sockets have no route. Omitted ports mean 80 for HTTP and 443 for HTTPS.
+# A leading *. matches subdomains only; a full * allows every host.
 # Lists accumulate across files and CLI options; normalized duplicates are
-# removed. DNS A/AAAA queries require an allowed hostname, regardless of port
-# or scheme. Example values, not built-in permissions:
-# network_allow = ["https://api.example.com", "https://*.packages.example.com"]
+# removed. DNS A/AAAA queries require an allowed hostname, regardless of the
+# origin's scheme or port.
+# Example origins (replace with the services you need):
+# network_allow = [
+#     "https://api.example.com",
+#     "https://*.packages.example.com",
+# ]
 
-# Host -> sandbox: reach a sandbox server through a host loopback port.
-# Format: "[HOST_PORT:]SANDBOX_PORT[/tcp|udp]". Defaults to the same port and TCP;
-# host port 0 allocates an available port. Requires network = "private".
-# Default: []. Lists accumulate. Example: host :13000 -> sandbox :3000.
-# publish = ["13000:3000"]
+# Reach a sandbox server through a host loopback port. Default: [].
+# Requires "private" network.
+# Format: "[HOST_PORT:]SANDBOX_PORT[/tcp|udp]".
+# Omitting HOST_PORT uses the sandbox port; omitting the protocol uses TCP.
+# Host port 0 chooses an available port. Lists accumulate.
+# Example: host localhost:13000 connects to sandbox port 3000.
+# publish = [
+#     "13000:3000",
+# ]
 
-# Sandbox -> host: reach a selected host loopback service from the sandbox.
-# Format: "[SANDBOX_PORT:]HOST_PORT[/tcp|udp]". Defaults to the same port and TCP;
-# both ports must be 1-65535. Requires network = "private".
-# These services bypass the HTTP allowlist and retain their host privileges.
-# Default: []. Lists accumulate; identical mappings are removed.
-# Examples: sandbox :9222 -> host :9222; sandbox :15432 -> host :5432.
-# host_port = ["9222", "15432:5432"]
+# Reach a host loopback service from the sandbox. Default: [].
+# Requires "private" network. These services bypass the HTTP allowlist and
+# retain their host privileges.
+# Format: "[SANDBOX_PORT:]HOST_PORT[/tcp|udp]".
+# Omitting SANDBOX_PORT uses the host port; omitting the protocol uses TCP.
+# Both ports must be 1-65535. Lists accumulate; identical mappings are removed.
+# Examples: sandbox port 9222 connects to host port 9222;
+# sandbox port 15432 connects to host port 5432.
+# host_port = [
+#     "9222",
+#     "15432:5432",
+# ]
 
 # Containers and enforcement
 # --------------------------
-# "auto": enable Podman when installed and compatible. "on": require it.
-# "off": disable it. Enabled modes provide a sandbox-local Docker-compatible
-# API socket, started on demand. The host Podman socket is never exposed.
-# A read-only workspace or required Landlock disables "auto" and rejects "on".
-# Default: "auto".
+# Run containers with a sandbox-local Podman service. Default: "auto".
+#   "auto" - enable when installed and compatible
+#   "on"   - require Podman
+#   "off"  - disable Podman
+# When enabled, a Docker-compatible API starts on demand. The host Podman
+# socket is never exposed. A read-only workspace or required Landlock
+# disables "auto" and rejects "on".
 # podman = "auto"
 
-# Additional kernel filesystem enforcement. "auto": enable when supported and
-# Podman is off. "required": refuse launch if unavailable; disables automatic
-# Podman. "off": disable. Required Landlock and Podman are incompatible.
-# Default: "auto".
+# Add kernel filesystem enforcement with Landlock. Default: "auto".
+#   "auto"     - enable when supported and Podman is off
+#   "required" - refuse launch if unavailable; disable automatic Podman
+#   "off"      - disable Landlock
+# Required Landlock and enabled Podman are incompatible.
 # landlock = "auto"
 
-# Kernel syscall filtering. "auto": enable a built-in profile when supported.
-# "required": refuse launch if unavailable. "off": disable filtering.
-# The profile depends on whether Podman is enabled. Default: "auto".
+# Filter kernel system calls with seccomp. Default: "auto".
+#   "auto"     - enable a built-in profile when supported
+#   "required" - refuse launch if unavailable
+#   "off"      - disable filtering
+# The profile depends on whether Podman is enabled.
 # seccomp = "auto"
 
 # Additional host paths
 # ---------------------
-# Bind existing paths at the same absolute location inside the sandbox.
-# Relative paths resolve from this configuration file's directory for both
-# settings. Lists accumulate across files and CLI options. Default: [] each.
+# Share existing host paths at the same absolute location inside the sandbox.
+# Relative paths resolve from this configuration file's directory, including
+# in user configuration. Lists accumulate across files and CLI options.
 
-# Read-only access. Example:
-# ro_bind = ["./toolchain"]
+# Grant read-only access to host paths. Default: [].
+# Example:
+# ro_bind = [
+#     "./toolchain",
+# ]
 
-# Read-write access, including in copy-on-write and read-only workspace modes.
-# Writes persist on the host. Example:
-# rw_bind = ["/var/lib/example"]
+# Grant read-write access to host paths. Default: [].
+# Writes persist on the host, even in copy-on-write and read-only workspaces.
+# Example:
+# rw_bind = [
+#     "/var/lib/example",
+# ]
 
 # Terminal and clipboard
 # ----------------------
-# A private controlling terminal. "auto": use one when stdin and stdout are
-# terminals. "always": require one. "never": disable. Default: "auto".
+# Use a private controlling terminal (PTY). Default: "auto".
+#   "auto"   - use one when stdin and stdout are terminals
+#   "always" - require one
+#   "never"  - disable it
 # tty = "auto"
 
-# "wayland": let sandbox processes replace the host clipboard through terminal
-# OSC 52 requests. Requires a PTY, host wl-clipboard, and a Wayland session.
-# Provides no clipboard-reading operation. "off": no bridge. Default: "off".
+# Allow writes to the host clipboard. Default: "off".
+#   "off"     - no clipboard bridge
+#   "wayland" - accept terminal OSC 52 clipboard requests
+# Requires a PTY, host wl-clipboard, and a Wayland session. Sandbox processes
+# can replace the host clipboard; the bridge provides no clipboard reading.
 # clipboard = "off"
 
 # Environment
 # -----------
 # Most host environment variables, including secrets, are not inherited.
-# Remove a variable from the sandbox environment. Default: [].
-# unset_env = ["SSH_AUTH_SOCK"]
 
+# Remove named variables from the sandbox environment. Default: [].
+# Removal wins over [env] entries in the same file. Later layers can set them
+# again. Example:
+# unset_env = [
+#     "SSH_AUTH_SOCK",
+# ]
+
+# Set or inherit variables. Default: no overrides. Entries merge by name;
+# later layers override earlier ones.
+# Strings set literal values, including an empty string. { inherit = true }
+# copies the host variable; if absent on the host, it is unset in the sandbox.
+# Inherit tokens instead of storing secrets in this file.
+#
 # Keep all other settings ABOVE [env]: TOML puts subsequent keys in that table.
-# Uncomment the table header as well as the variables you need.
-# Entries merge by name across layers. Strings set literal values (even "");
-# { inherit = true } copies the named host variable, leaving it unset if absent.
-# Use inheritance for tokens rather than storing secrets in this file.
-# These variable names are examples; replace them with those your tools need.
-# [env]
+# Uncomment the variables you need. Replace these example names with the
+# variables your tools use. An empty [env] table changes no settings.
+[env]
 # LITERAL = "value"
 # EMPTY = ""
 # FROM_HOST = { inherit = true }

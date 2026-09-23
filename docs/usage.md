@@ -48,8 +48,8 @@ the launcher applies these sources in increasing precedence order:
 2. `.bwrap-agent.toml` in the selected canonical project directory
 3. explicit command-line options
 
-Create a behavior-neutral, fully commented project configuration reference in
-the current directory with:
+Create a behavior-neutral project configuration reference in the current
+directory with:
 
 ```console
 $ ./bin/bwrap-agent config create project
@@ -69,6 +69,8 @@ The user command honors `XDG_CONFIG_HOME` and creates missing parent
 directories. Its template omits the project-only `instance` setting. Both
 commands refuse to replace an existing file and do not load configuration or
 start a sandbox. Bare `config create` requires a scope and creates nothing.
+Both templates leave all settings commented out, with an active, empty `[env]`
+table so you can uncomment individual environment variables directly.
 
 Before a project configuration can be loaded, review it and approve its exact
 contents on the host:
@@ -106,7 +108,7 @@ resources you actually need. Settings you omit retain their defaults.
 
 ```toml
 instance = "my-project" # project configuration only
-agent_config = true
+agent_config = "auto"
 git_config = true
 network = "private"
 network_allow = ["https://registry.example.com", "https://*.packages.example.com"]
@@ -266,13 +268,29 @@ implementation details.
 ## Agent and Git configuration
 
 The `run` command requires a program; there is no implicit default agent. The
-launcher currently detects OpenCode and Pi by executable basename. Their
+default `agent_config = "auto"` detects OpenCode and Pi using only the first
+program's executable basename. Their
 user-managed host configuration, extensions, skills, and packages are exposed
 read-only, so host edits are visible on the next launch without letting the
 sandbox rewrite them. Credentials and mutable runtime data remain writable,
-persistent, and isolated per instance. Use `--no-agent-config` to suppress new
+persistent, and isolated per instance. Use `--agent-config off` to suppress new
 host configuration exposure and credential seeding; it never deletes data
 already stored in an instance.
+
+Select `opencode` or `pi` explicitly when using a wrapper:
+
+```console
+$ bwrap-agent run --agent-config opencode tmux opencode
+$ bwrap-agent run --agent-config opencode ./my-custom-opencode-launcher
+```
+
+You can also set `agent_config = "opencode"` or `agent_config = "pi"` in user
+or project configuration. Automatic detection does not inspect arguments or
+script contents. Selection controls configuration sharing and agent environment
+setup; it does not install the agent or change executable preparation. Wrapper
+dependencies must already be available inside the sandbox. `off` retains runtime
+setup for directly detected agents while suppressing new host configuration
+sharing and credential copying.
 
 For OpenCode, `$XDG_CONFIG_HOME/opencode` is mounted read-only while
 `$XDG_DATA_HOME/opencode`, including a seed-once copy of `auth.json`, remains
@@ -304,7 +322,7 @@ retains its normal configuration precedence, including repository overrides.
 Host edits are picked up on the next launch; existing instance files are
 covered by mounts without being overwritten. Disable automatic exposure with
 `--no-git-config` or `git_config = false`; this is independent of
-`--no-agent-config` and never deletes instance data.
+`--agent-config off` and never deletes instance data.
 
 These files are exposed in full, including any embedded credentials and
 settings for signing, hooks, and credential helpers. Referenced resources and

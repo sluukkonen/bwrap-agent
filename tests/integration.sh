@@ -388,6 +388,10 @@ HOME="$agent_home" XDG_CONFIG_HOME="$agent_config" XDG_DATA_HOME="$agent_data" "
     run --project "$config_project" --instance integration-opencode --podman off --network host --tty never \
     "$agent_bins/opencode" second sandbox-auth sandbox-auth
 test ! -e "$agent_config/opencode/write-probe"
+cp "$agent_bins/opencode" "$agent_bins/custom-launcher"
+HOME="$agent_home" XDG_CONFIG_HOME="$agent_config" XDG_DATA_HOME="$agent_data" "$binary" \
+    run --project "$config_project" --instance integration-opencode-wrapper --podman off --network host --tty never \
+    --agent-config opencode "$agent_bins/custom-launcher" second changed-host-auth wrapper-auth
 printf 'opencode-agent-ok\n'
 
 protected_project="$test_root/protected-project"

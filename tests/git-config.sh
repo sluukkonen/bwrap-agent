@@ -28,7 +28,7 @@ run_git() {
     "$binary" run --no-config --project "$root/project" \
         --instance integration-git-config --podman off --network none --tty never "$@"
 }
-run_git --no-agent-config /bin/sh -ec '
+run_git --agent-config off /bin/sh -ec '
     test "$(git config-marker)" = "Home Identity"
     test "$(git config --get user.email)" = inherited@example.invalid
     test ! -e "$XDG_CONFIG_HOME/git/private"
